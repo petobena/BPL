@@ -47,11 +47,16 @@
 
 .chart {
     width: calc(100% - 280px);
-    height: 390px;
     @include for-phone-only {
         width: 100%;
         margin-bottom: 16px;
     }
+}
+.chart-main {
+    height: 390px
+}
+.chart-p {
+    height: 130px
 }
 
 .chart-legend {
@@ -79,6 +84,10 @@
         background-color: #ddeeff;
         padding-bottom: 8px;
     }
+}
+
+.forced-hidden {
+    display:none !important;
 }
 
 #gravity-sg,
@@ -136,11 +145,14 @@
 
 /** WIFI **/
 
-#rssi {
+.wifi-bars {
     position: relative;
     height: 16px;
     width: 24px;
     display: inline-block;
+}
+.no-display {
+    display:none !important;
 }
 
 #wifisignal {

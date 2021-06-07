@@ -260,7 +260,7 @@ function generichttp_get() {
     r.format = encodeURIComponent(format.escapeJSON());
     r.method = (Q("#m_post").checked) ? "POST" : "GET";
     r.type = Q("#data-type").value.trim();
-    r.service = 0;
+    r.service = 3;
     return r;
 }
 
@@ -336,7 +336,7 @@ function thingspeak_get() {
 
     var info = {};
     info.url = "http://api.thingspeak.com/update";
-    info.format = encodeURIComponent(format.escapeJSON());;
+    info.format = encodeURIComponent(format.escapeJSON());
     info.method = "POST";
     info.type = "application/x-www-form-urlencoded";
     info.service = 0;
@@ -362,7 +362,7 @@ function brewfather_get(r) {
     info.url = "http://log.brewfather.net/brewpiless?id=" + uid;
 
     var format = "{\"id\":\"" + device +
-        "\",\"beerTemp\":%b,\"beerSet\":%B,\"fridgeTemp\":%f,\"fridgeSet\":%F,\"roomTemp\":%r,\"gravity\":%g,\"tiltValue\":%t,\"auxTemp\":%a,\"extVolt\":%v,\"timestamp\":%u}";
+        "\",\"beerTemp\":%b,\"beerSet\":%B,\"fridgeTemp\":%f,\"fridgeSet\":%F,\"roomTemp\":%r,\"gravity\":%g,\"tiltValue\":%t,\"auxTemp\":%a,\"extVolt\":%v,\"timestamp\":%u,\"tempUnit\":\"%U\",\"pressure\":%P,\"mode\":\"%M\",\"humidity\":%h}";
 
     info.format = encodeURIComponent(format.escapeJSON());;
 
@@ -372,19 +372,66 @@ function brewfather_get(r) {
     return info;
 }
 
+//brewfahter
+function brewersfriend_set(r) {
+    Q("#service-type").value = "brewersfriend";
+    serviceOption("brewersfriend");
 
+    var match = /\/\/log\.brewersfriend\.com\/stream\/(\w+)$/.exec(r.url);
+
+
+    Q("#brewersfriend-apikey").value = match[1];
+
+    var beermatch = /"beer":"([^"]+)"/.exec(r.format);
+    Q("#brewersfriend-beer").value = beermatch[1];
+
+    var gumatch = /"gravity_unit":"([P|G])"/.exec(r.format);
+    if (gumatch[1] == "P") {
+        Q("#gu-sg").checked = false;
+        Q("#gu-plato").checked = true;
+    } else {
+        Q("#gu-sg").checked = true;
+        Q("#gu-plato").checked = false;
+    }
+}
+
+function brewersfriend_get(r) {
+    var gf = "%g";
+    var gu = "G";
+    if (Q('input[name="BF-gu"]:checked').value == "gu-plato") {
+        var gf = "%p";
+        var gu = "P";
+    }
+    //http://log.brewersfriend.com/stream/[API KEY]
+    var apikey = Q("#brewersfriend-apikey").value.trim();
+    var beer = Q("#brewersfriend-beer").value.trim();
+
+    var format = "{\"name\":\"%H\",\"temp\": %b,\"temp_unit\": \"%U\",\"gravity\":" + gf +
+        ",\"gravity_unit\":\"" + gu + "\",\"ph\": \"\",\"comment\": \"\",\"beer\":\"" + beer + "\",\"battery\":%v,\"RSSI\": \"\",\"angle\": %t}";
+
+    var info = {};
+    info.url = 'http://log.brewersfriend.com/stream/' + apikey;
+
+    info.format = encodeURIComponent(format.escapeJSON());;
+
+    info.method = "POST";
+    info.type = "application/json";
+    info.service = 2; // null string instead of null
+    return info;
+}
 //
 function service_set(r) {
     if (r.service == 1) { // ubidots.com 
         ubidots_set(r);
-    } else {
+    } if (r.service == 0){ // generic http, auto
         if (/http:\/\/api\.thingspeak\.com\//.exec(r.url))
             thingspeak_set(r);
         else if (/http:\/\/log\.brewfather\.net\//.exec(r.url))
             brewfather_set(r);
-        else
-            generichttp_set(r);
-    }
+        else if (/http:\/\/log\.brewersfriend\.com\//.exec(r.url))
+            brewersfriend_set(r);
+    } else
+        generichttp_set(r);
 }
 
 function update() {
@@ -395,14 +442,17 @@ function update() {
     else if (service == "ubidots") r = ubidots_get();
     else if (service == "thingspeak") r = thingspeak_get();
     else if (service == "brewfather") r = brewfather_get();
+    else if (service == "brewersfriend") r = brewersfriend_get();
 
     if (enabled && !r) return;
     if (!r) {
         // default
-        r = { url: "", format: "", method: "POST", type: "", service: 0 };
+        r = { url: "", format: "", method: "POST", type: "", service:3 };
     }
     r.enabled = enabled;
     r.period = Q("#period").value;
+    if (r.period < 60) r.period = 60;
+    if (r.period < 900 && (service == "brewfather" || service == "brewersfriend")) r.period=900;
 
     s_ajax({
         url: logurl,
@@ -419,7 +469,7 @@ function update() {
 }
 
 function remote_init(classic) {
-    var MinPeriod = { generichttp: 1, thingspeak: 15, brewfather: 900, ubidots: 1 };
+    var MinPeriod = { generichttp: 60, thingspeak: 15, brewfather: 900, ubidots: 60,brewersfriend:900 };
     Q("#period").onchange = function() {
         var min = MinPeriod[Q("#service-type").value];
         if (Q("#period").value < min) Q("#period").value = min;
@@ -495,4 +545,6 @@ function init(classic) {
 
     remote_init(classic);
     logs.init();
+
+    mqttInit();
 }

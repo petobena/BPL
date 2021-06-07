@@ -26,6 +26,16 @@ function loadSetting() {
                     }
                 }
             });
+            // system info
+            var mac="";
+            for(var i=0;i<j.mac.length;i++){
+                mac += ((mac=="")?  "":":") + j.mac[i].toString(16);
+            }
+            Q("#mac-address").innerText=mac;
+            Q("#flash-id").innerText = "0x" + j.fid.toString(16);
+            Q("#real-flash-size").innerText=j.frsize;
+            Q("#specified-flash-size").innerText=j.fsize;
+            Q("#fs-size").innerText=j.fs;
         },
         fail: function(d) {
             alert("<%= script_config_error_getting_data %>:" + d);
@@ -33,6 +43,12 @@ function loadSetting() {
     });
 }
 
+function hidesysinfo(){
+    Q("#sysinfo").style.display = "none";
+}
+function showsysinfo(){
+    Q("#sysinfo").style.display = "block";
+}
 function waitrestart() {
     Q("#waitprompt").style.display = "block";
     Q("#inputform").style.display = "none";
@@ -61,6 +77,7 @@ function save() {
     });
     var div = Q("select[name=wifi]");
     json["wifi"] = div.value;
+    json["dis"] = Q("select[name=dis]").value;
     console.log(JSON.stringify(json));
     var url = "config" + (reboot ? "" : "?nb");
     s_ajax({
@@ -77,7 +94,10 @@ function save() {
 }
 
 function load() {
-    if (Q("#verinfo")) Q("#verinfo").innerHTML = "v" + JSVERSION;
+    if (Q("#verinfo")) {
+        Q("#verinfo").innerHTML = "v" + JSVERSION;
+        getActiveNavItem();
+    }
     loadSetting();
     Net.init();
 
@@ -102,8 +122,6 @@ function validIP(t) {
     }
     return value;
 }
-
-function modechange(sel) {}
 
 var Net = {
     select: function(l) {
@@ -176,9 +194,12 @@ var Net = {
         var ip = validIP(Q("#staticip").value);
         var gw = validIP(Q("#gateway").value);
         var nm = validIP(Q("#netmask").value);
+        var dns = validIP(Q("#dns").value);
         if (ip && gw && nm) {
             data = data + "&ip=" + Q("#staticip").value.trim() +
-                "&gw=" + Q("#gateway").value.trim() + "&nm=" + Q("#netmask").value.trim();
+                "&gw=" + Q("#gateway").value.trim() +
+                "&nm=" + Q("#netmask").value.trim() +
+                "&dns=" + Q("#dns").value.trim();
         }
         s_ajax({
             m: "POST",
@@ -196,3 +217,14 @@ var Net = {
         Q("#networkselection").style.display = "none";
     }
 };
+
+function savewifi(){
+    Net.save();
+    div = Q("select[name=wifi]");
+    if(div.value ==2){
+        div.value = 3;
+        if(typeof window.oridata != "undefined"){
+            window.oridata.wifi=3;
+        }
+    }
+}

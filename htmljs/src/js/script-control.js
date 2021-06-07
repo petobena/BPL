@@ -1,5 +1,5 @@
 var BPURL = "/tschedule";
-var MAX_STEP = 7;
+var MAX_STEP = 10;
 
 function formatDate(dt) {
     //	var y = dt.getFullYear();
@@ -26,7 +26,7 @@ function formatDateForPicker(date) {
 /* profile.js */
 var profileEditor = {
     dirty: false,
-    tempUnit: 'C',
+    TU: 'C',
     C_startday_Id: "#startdate",
     C_savebtn_Id: "savebtn",
     markdirty: function(d) {
@@ -58,6 +58,7 @@ var profileEditor = {
         this.setStartDate(d);
         this.reorg();
         this.markdirty(true);
+        ControlChart.update(this.chartdata());
     },
     rowList: function() {
         var tb = document.getElementById("profile_t").getElementsByTagName("tbody")[0];
@@ -77,7 +78,7 @@ var profileEditor = {
         else {
             this.markdirty(true);
             this.reorg();
-            ControlChart.update(this.chartdata(), this.tempUnit);
+            ControlChart.update(this.chartdata());
         }
     },
     tempChange: function(td) {
@@ -85,7 +86,7 @@ var profileEditor = {
             td.innerHTML = td.saved;
         else {
             this.markdirty(true);
-            ControlChart.update(this.chartdata(), this.tempUnit);
+            ControlChart.update(this.chartdata());
         }
     },
     stableChange: function(td) {
@@ -218,7 +219,7 @@ var profileEditor = {
     },
     chartdata: function() {
         var rowlist = this.rowList();
-        if (rowlist.length == 0) return [];
+        if (rowlist.length == 0 || typeof this.sd =="undefined")  return [];
 
         var utime = this.sd.getTime();
         var row = rowlist[0];
@@ -251,7 +252,7 @@ var profileEditor = {
         var stage;
 
         if (rowlist.length == 0) {
-            var init = (this.tempUnit == 'C') ? 20 : 68;
+            var init = (this.TU == 'C') ? 20 : 68;
             stage = {
                 c: 't',
                 t: init,
@@ -281,7 +282,7 @@ var profileEditor = {
 
         this.reorg();
         this.markdirty(true);
-        ControlChart.update(this.chartdata(), this.tempUnit);
+        ControlChart.update(this.chartdata());
     },
     delRow: function() {
         // delete last row
@@ -297,7 +298,7 @@ var profileEditor = {
         last.parentNode.removeChild(last);
 
         this.markdirty(true);
-        ControlChart.update(this.chartdata(), this.tempUnit);
+        ControlChart.update(this.chartdata());
     },
     rowTemp: function(row) {
         return parseFloat(row.getElementsByClassName("stage-temp")[0].innerHTML);
@@ -343,8 +344,7 @@ var profileEditor = {
         this.reorg()
     },
 
-    initable: function(c, e) {
-        this.setStartDate(e);
+    initable: function(c) {
         if (!this.row) {
             var b = document.getElementById("profile_t").getElementsByTagName("tbody")[0];
             this.row = b.getElementsByTagName("tr")[0];
@@ -427,38 +427,48 @@ var profileEditor = {
         var ret = {
             s: s,
             v: 2,
-            u: this.tempUnit,
+            u: this.TU,
             t: temps
         };
         //console.log(ret);
         return ret;
     },
+    convertUnit:function(steps,unit){
+        if(unit == this.TU) return steps;
+
+        for(var i=0;i< steps.length;i++)
+            steps[i].t = (unit == 'F')? F2C(steps[i].t):C2F(steps[i].t);
+        
+        return steps;
+    },
     loadProfile: function(a) {
         this.sd = new Date(a.s);
-        this.tempUnit = a.u;
         this.clear();
-        this.renderRows(a.t);
-        ControlChart.update(this.chartdata(), this.tempUnit)
+        this.renderRows(this.convertUnit(a.t,a.u));
+        ControlChart.update(this.chartdata());
     },
     initProfile: function(p) {
         if (typeof p != "undefined") {
             // start date
             var sd = new Date(p.s);
-            this.tempUnit = p.u;
-            profileEditor.initable(p.t, sd);
+            this.setStartDate(sd);
+            this.initable(this.convertUnit(p.t,p.u));
         } else {
-            profileEditor.initable([], new Date());
+            this.setStartDate(new Date());
+            this.initable([]);
         }
     },
     setTempUnit: function(u) {
-        if (u == this.tempUnit) return;
-        this.tempUnit = u;
+        if (u == this.TU) return;
+        this.TU = u;
         var rl = this.rowList();
         for (var i = 0; i < rl.length; i++) {
             var tcell = rl[i].querySelector('td.stage-temp');
             var temp = parseFloat(tcell.innerHTML);
             if (!isNaN(temp)) tcell.innerHTML = (u == 'C') ? F2C(temp) : C2F(temp);
         }
+        ControlChart.updateTU(u);
+        ControlChart.update(this.chartdata());
     }
 };
 
@@ -684,13 +694,15 @@ var ControlChart = {
             }
         );
     },
-    update: function(data, unit) {
+    update: function(data) {
         if (data.length == 0) return;
         this.data = data;
-        this.unit = unit;
         this.chart.updateOptions({
             'file': this.data
         });
+    },
+    updateTU: function(unit) {
+        this.unit = unit;
     }
 };
 
@@ -828,7 +840,7 @@ function ccparameter(s) {
         minDegree: s.tempSetMin,
         maxDegree: s.tempSetMax,
         tempUnit: s.tempFormat
-    };
+    };    
     if (setting.tempUnit != BrewPiSetting.tempUnit) {
         updateTempUnit(setting.tempUnit);
         profileEditor.setTempUnit(setting.tempUnit);
@@ -844,12 +856,40 @@ function rcvBeerProfile(p) {
     ControlChart.init("tc_chart", profileEditor.chartdata(), p.u);
 }
 
+function HC_init(){
+    Q("#humidity-control").style.display="none";
+}
+function HC_show(config){
+    Q("#humidity-control").style.display="";
+    Q("#hc-mode").value = config.m;
+    Q("#hc-target").value = config.t;
+}
+
+function HC_apply(){
+    var target = Q("#hc-target").value;
+    var mode =  Q("#hc-mode").value;
+
+    s_ajax({
+        url:"/rh",
+        m: "POST",
+        data: "m=" + mode +"&t=" + target,
+        success: function(a) {
+            alert("<%= done %>")
+        },
+        fail: function(a) {
+            alert("<%= failed %>:" + a);
+        }
+    })
+
+}
+/* deprecated
 function initctrl_C(next) {
-    modekeeper.init();
+//    modekeeper.init();
     Capper.init();
     modekeeper.init();
     openDlgLoading();
 }
+*/
 
 function communicationError() {
     var div = Q('.error');
@@ -863,6 +903,7 @@ function initctrl() {
     getActiveNavItem();
     Capper.init();
     modekeeper.init();
+    PTC.init(Q("#ptc-control"));
     openDlgLoading();
 
     BWF.init({
@@ -885,6 +926,11 @@ function initctrl() {
                 }
                 if (typeof c["cap"] != "undefined")
                     Capper.status(c["cap"]);
+                if (typeof c["ptcs"] != "undefined")
+                    PTC.config(c.ptcs);
+                if (typeof c["rh"] != "undefined")
+                    HC_show(c.rh);
+                
             },
             C: function(c) { ccparameter(c); },
             B: rcvBeerProfile

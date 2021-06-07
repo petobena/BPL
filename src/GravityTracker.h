@@ -37,7 +37,8 @@ public:
         if(current < 0) current =NumberOfSlots-1;
         int previous = NumberOfSlots + _idx - duration ;
         while(previous >= NumberOfSlots) previous -= NumberOfSlots;
-        return (_record[previous] - _record[current]) <= to;
+        DBG_PRINTF("stable: duration %d, value:%d previous:%d, current:%d\n",duration,to,_record[previous],_record[current]);
+        return (_record[previous] > 0) && ((_record[previous] - _record[current]) <= to);
     }
 
     void add(TrackingGravity gravity,uint32_t time){
@@ -45,7 +46,7 @@ public:
 
         if(timediff > AveragePeriod){
            addRecord(gravity);
-           DBG_PRINTF("add %d @%ld\n",gravity,time);
+           DBG_PRINTF("add %d @%u\n",gravity,time);
            if(_lastValue >0){
                timediff -= AveragePeriod;
                while(timediff > AveragePeriod){

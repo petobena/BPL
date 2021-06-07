@@ -1,10 +1,13 @@
         var BChart = {
-            toggle: function(type) {
-                this.chart.toggleLine(type);
+            toggle: function(line,p) {
+                if(typeof p !="undefined" && p)  this.chart.togglePsiLine(line);
+                else this.chart.toggleLine(line);
             },
-            init: function(id, y1, y2) {
-                this.chart = new BrewChart(id);
+    
+            init: function(id, y1, y2,id2,pl,carbonation) {
+                this.chart = new UniBrewChart(id);
                 this.chart.setLabels(y1, y2);
+                this.chart.setPChart(id2,pl,carbonation)
             },
             setIgnoredMask: function(m) {
                 var t = this;
@@ -65,7 +68,7 @@
             if (range) {
                 window.iniRange = range.split("-");
             }
-            BChart.init("div_g", Q('#ylabel').innerHTML, Q('#y2label').innerHTML);
+            BChart.init("div_g", Q('#ylabel').innerHTML, Q('#y2label').innerHTML,"div_p",Q('#psilabel').innerHTML,Q('#vollabel').innerHTML);
             Q("#div_g").oncontextmenu = function(ev) {
                 ev = ev || window.event;
 
@@ -105,7 +108,7 @@
                 // response is unsigned 8 bit integer
                 var data = new Uint8Array(this.response);
 
-                if (BrewChart.testData(data) !== false) {
+                if (UniBrewChart.testData(data) !== false) {
                     BChart.raw = data;
                     BChart.chart.process(data);
                     if (BChart.chart.calibrating) {

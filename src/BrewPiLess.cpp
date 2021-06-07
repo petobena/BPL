@@ -8,9 +8,11 @@
 #include <ArduinoOTA.h>
 #include <FS.h>
 
-//#include <Hash.h>
-
+#if defined(ESP32)
+#include <AsyncTCP.h>
+#else
 #include <ESPAsyncTCP.h>
+#endif
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 //{ brewpi
@@ -52,7 +54,11 @@
 #endif
 
 extern "C" {
+#if defined(ESP32)
+//#include "lwip/apps/sntp.h"
+#else
 #include <sntp.h>
+#endif
 }
 
 #include "BPLSettings.h"
@@ -66,9 +72,35 @@ extern "C" {
 
 #include "ExternalData.h"
 
+#if SupportMqttRemoteControl
+#include "MqttRemoteControl.h"
+#endif
+
 #if EanbleParasiteTempControl
 #include "ParasiteTempController.h"
 #endif
+
+#if SupportPressureTransducer
+#include "PressureMonitor.h"
+#endif
+
+#if SupportTiltHydrometer
+#include "TiltListener.h"
+#endif
+
+
+#if UseLittleFS
+#include <LittleFS.h>
+#else
+#if defined(ESP32)
+#include <SPIFFS.h>
+#endif
+#endif
+
+#if EnableHumidityControlSupport
+#include "HumidityControl.h"
+#endif
+
 //WebSocket seems to be unstable, at least on iPhone.
 //Go back to ServerSide Event.
 #define UseWebSocket true
@@ -93,7 +125,6 @@ extern "C" {
 
 #define POLLING_PATH 	"/getline_p"
 #define PUTLINE_PATH	"/putline"
-//#define CONTROL_CC_PATH	"/tcc"
 
 #ifdef ENABLE_LOGGING
 #define LOGGING_PATH	"/log"
@@ -112,7 +143,6 @@ extern "C" {
 
 #define CHART_LIB_PATH       "/dygraph-combined.js"
 
-#define GRAVITY_PATH       "/gravity"
 
 #define BEER_PROFILE_PATH       "/tschedule"
 
@@ -123,10 +153,14 @@ extern "C" {
 #define ParasiteTempControlPath "/ptc"
 #endif
 
-#define IGNORE_MASK_PATH  "/icalm"
-
+#define GRAVITY_PATH       "/gravity"
 #define GravityDeviceConfigPath "/gdc"
 #define GravityFormulaPath "/coeff"
+
+#if SupportTiltHydrometer
+#define TiltCommandPath "/tcmd"
+#endif
+
 
 #if AUTO_CAP
 #define CAPPER_PATH "/cap"
@@ -136,6 +170,12 @@ extern "C" {
 #define WIFI_CONNECT_PATH "/wificon"
 #define WIFI_DISC_PATH "/wifidisc"
 
+#define MQTT_PATH "/mqtt"
+#if SupportPressureTransducer
+#define PRESSURE_PATH "/psi"
+#endif
+
+#define HUMIDITY_CONTROL_PATH "/rh"
 
 const char *public_list[]={
 "/bwf.js",
@@ -146,6 +186,13 @@ const char *nocache_list[]={
 "/brewing.json",
 "/brewpi.cfg"
 };
+
+#if UseLittleFS
+FS& FileSystem = LittleFS;
+#else
+FS& FileSystem =SPIFFS;
+#endif
+
 //*******************************************
 
 	String getContentType(String filename){
@@ -161,6 +208,7 @@ const char *nocache_list[]={
 		else if(filename.endsWith(".pdf")) return "application/x-pdf";
 		else if(filename.endsWith(".zip")) return "application/x-zip";
 		else if(filename.endsWith(".gz")) return "application/x-gzip";
+		else if(filename.endsWith(".jgz")) return "application/javascript";
 		return "text/plain";
 	  }
 
@@ -182,14 +230,20 @@ AsyncEventSource sse(SSE_PATH);
 extern const uint8_t* getEmbeddedFile(const char* filename,bool &gzip, unsigned int &size);
 
 void requestRestart(bool disc);
+void tiltScanResult(String& result);
 
 void initTime(bool apmode)
 {
-	if(apmode){
+/*	if(apmode){
+		DBG_PRINTF("initTime in ap mode\n");
 		TimeKeeper.begin();
 	}else{
-		TimeKeeper.begin((char*)"time.nist.gov",(char*)"time.windows.com",(char*)"de.pool.ntp.org");
+		DBG_PRINTF("connect to Time server\n");
+		TimeKeeper.begin((char*)"time.google.com",(char*)"pool.ntp.org",(char*)"time.windows.com");
 	}
+*/
+	TimeKeeper.begin((char*)"time.google.com",(char*)"pool.ntp.org",(char*)"time.windows.com");
+
 }
 #if AUTO_CAP
 void capStatusReport(void);
@@ -199,7 +253,35 @@ class BrewPiWebHandler: public AsyncWebHandler
 	void handleFileList(AsyncWebServerRequest *request) {
 		if(request->hasParam("dir",true)){
         	String path = request->getParam("dir",true)->value();
-          	Dir dir = SPIFFS.openDir(path);
+			#if defined(ESP32)
+			File dir = FileSystem.open(path);
+          	String output = "[";
+			if(dir.isDirectory()){
+				File entry = dir.openNextFile();
+          		while(entry){
+            		
+            		if (output != "[") output += ',';
+            		bool isDir = false;
+            		output += "{\"type\":\"";
+            		output += (isDir)?"dir":"file";
+            		output += "\",\"name\":\"";
+					#if UseLittleFS
+					output += String(entry.name());
+					#else
+            		output += String(entry.name()).substring(1);
+					#endif
+            		output += "\"}";
+            		entry.close();
+					entry = dir.openNextFile();
+          		}
+			  }
+          	output += "]";
+          	request->send(200, "text/json", output);
+          	output = String();
+
+
+			#else
+          	Dir dir = FileSystem.openDir(path);
           	path = String();
           	String output = "[";
           	while(dir.next()){
@@ -209,13 +291,18 @@ class BrewPiWebHandler: public AsyncWebHandler
             		output += "{\"type\":\"";
             		output += (isDir)?"dir":"file";
             		output += "\",\"name\":\"";
+					#if UseLittleFS
+            		output += String(entry.name());
+					#else
             		output += String(entry.name()).substring(1);
+					#endif
             		output += "\"}";
             		entry.close();
           	}
           	output += "]";
           	request->send(200, "text/json", output);
           	output = String();
+			#endif
         }
         else
           request->send(400);
@@ -223,7 +310,13 @@ class BrewPiWebHandler: public AsyncWebHandler
 
 	void handleFileDelete(AsyncWebServerRequest *request){
 		if(request->hasParam("path", true)){
-        	ESP.wdtDisable(); SPIFFS.remove(request->getParam("path", true)->value()); ESP.wdtEnable(10);
+			#if !defined(ESP32)
+        	ESP.wdtDisable(); 
+			#endif
+			FileSystem.remove(request->getParam("path", true)->value()); 
+			#if !defined(ESP32)
+			ESP.wdtEnable(10);
+			#endif
             request->send(200, "", "DELETE: "+request->getParam("path", true)->value());
         } else
           request->send(404);
@@ -232,9 +325,11 @@ class BrewPiWebHandler: public AsyncWebHandler
 	void handleFilePuts(AsyncWebServerRequest *request){
 		if(request->hasParam("path", true)
 			&& request->hasParam("content", true)){
+			#if !defined(ESP32)
         	ESP.wdtDisable();
+			#endif
     		String file=request->getParam("path", true)->value();
-    		File fh= SPIFFS.open(file, "w");
+    		File fh= FileSystem.open(file, "w");
     		if(!fh){
     			request->send(500);
     			return;
@@ -242,7 +337,9 @@ class BrewPiWebHandler: public AsyncWebHandler
     		String c=request->getParam("content", true)->value();
       		fh.print(c.c_str());
       		fh.close();
+			#if !defined(ESP32)
         	ESP.wdtEnable(10);
+			#endif
             request->send(200,"application/json","{}");
             DBG_PRINTF("fputs path=%s\n",file.c_str());
         } else
@@ -251,26 +348,26 @@ class BrewPiWebHandler: public AsyncWebHandler
 
     bool fileExists(String path)
     {
-	    if(SPIFFS.exists(path)) return true;
+	    if(FileSystem.exists(path)) return true;
 	    bool dum;
 	    unsigned int dum2;
 
 	    if(getEmbeddedFile(path.c_str(),dum,dum2)) return true;
-		if(path.endsWith(CHART_LIB_PATH) && SPIFFS.exists(CHART_LIB_PATH)) return true;
+		if(path.endsWith(CHART_LIB_PATH) && FileSystem.exists(CHART_LIB_PATH)) return true;
 		// safari workaround.
 		if(path.endsWith(".js")){
 			String pathWithJgz = path.substring(0,path.lastIndexOf('.')) + ".jgz";
 			 //DBG_PRINTF("checking with:%s\n",pathWithJgz.c_str());
-			 if(SPIFFS.exists(pathWithJgz)) return true;
+			 if(FileSystem.exists(pathWithJgz)) return true;
 		}
 		String pathWithGz = path + ".gz";
-		if(SPIFFS.exists(pathWithGz)) return true;
+		if(FileSystem.exists(pathWithGz)) return true;
 		return false;
     }
 
-	void sendProgmem(AsyncWebServerRequest *request,const char* html)
+	void sendProgmem(AsyncWebServerRequest *request,const char* html,String contentType)
 	{
-		AsyncWebServerResponse *response = request->beginResponse(String("text/html"),
+		AsyncWebServerResponse *response = request->beginResponse(contentType,
   			strlen_P(html),
   			[=](uint8_t *buffer, size_t maxLen, size_t alreadySent) -> size_t {
     			if (strlen_P(html+alreadySent)>maxLen) {
@@ -290,8 +387,8 @@ class BrewPiWebHandler: public AsyncWebHandler
 		//workaround for safari
 		if(path.endsWith(".js")){
 			String pathWithJgz = path.substring(0,path.lastIndexOf('.')) + ".jgz";
-			if(SPIFFS.exists(pathWithJgz)){
-				AsyncWebServerResponse * response = request->beginResponse(SPIFFS, pathWithJgz,"application/javascript");
+			if(FileSystem.exists(pathWithJgz)){
+				AsyncWebServerResponse * response = request->beginResponse(FileSystem, pathWithJgz,"application/javascript");
 				response->addHeader("Content-Encoding", "gzip");
 				response->addHeader("Cache-Control","max-age=2592000");
 				request->send(response);
@@ -299,13 +396,13 @@ class BrewPiWebHandler: public AsyncWebHandler
 				return;
 			}
 		}
-		String pathWithGz = path + ".gz";
-		if(SPIFFS.exists(pathWithGz)){
+		String pathWithGz = path + String(".gz");
+		if(FileSystem.exists(pathWithGz)){
 #if 0
-			AsyncWebServerResponse * response = request->beginResponse(SPIFFS, pathWithGz,getContentType(path));
+			AsyncWebServerResponse * response = request->beginResponse(FileSystem, pathWithGz,getContentType(path));
 			// AsyncFileResonse will add "content-disposion" header, result in "download" of Safari, instead of "render" 
 #else
-			File file=SPIFFS.open(pathWithGz,"r");
+			File file=FileSystem.open(pathWithGz,"r");
 			if(!file){
 				request->send(500);
 				return;
@@ -318,8 +415,8 @@ class BrewPiWebHandler: public AsyncWebHandler
 			return;
 		}
 		  
-		if(SPIFFS.exists(path)){
-			//request->send(SPIFFS, path);
+		if(FileSystem.exists(path)){
+			//request->send(FileSystem, path);
 			bool nocache=false;
 			for(byte i=0;i< sizeof(nocache_list)/sizeof(const char*);i++){
 				if(path.equals(nocache_list[i])){
@@ -329,7 +426,7 @@ class BrewPiWebHandler: public AsyncWebHandler
 			}
 
 
-			AsyncWebServerResponse *response = request->beginResponse(SPIFFS, path);
+			AsyncWebServerResponse *response = request->beginResponse(FileSystem, path);
 			if(nocache)
 				response->addHeader("Cache-Control","no-cache");
 			else
@@ -344,10 +441,23 @@ class BrewPiWebHandler: public AsyncWebHandler
 		if(file){
 			DBG_PRINTF("using embedded file:%s\n",path.c_str());
 			if(gzip){
+				#if defined(ESP32)
+                AsyncWebServerResponse *response = request->beginResponse("text/html", size,[=](uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
+					 //Write up to "maxLen" bytes into "buffer" and return the amount written.
+  					//index equals the amount of bytes that have been already sent
+  					//You will not be asked for more bytes once the content length has been reached.
+  					//Keep in mind that you can not delay or yield waiting for more data!
+  					//Send what you currently have and you will be asked for more again
+  					memcpy(buffer,file + index, maxLen);
+					return maxLen;
+				});
+
+				#else
                 AsyncWebServerResponse *response = request->beginResponse_P(200, "text/html", file, size);
+				#endif
                 response->addHeader("Content-Encoding", "gzip");
                 request->send(response);
-			}else sendProgmem(request,(const char*)file);
+			}else sendProgmem(request,(const char*)file,getContentType(path));
 		}
 	}	  
 public:
@@ -360,12 +470,12 @@ public:
 	void handleRequest(AsyncWebServerRequest *request){
 		SystemConfiguration *syscfg=theSettings.systemConfiguration();
 
+		#if UseServerSideEvent == true
 	 	if(request->method() == HTTP_GET && request->url() == POLLING_PATH) {
 	 		char *line=brewPi.getLastLine();
 	 		if(line[0]!=0) request->send(200, "text/plain", line);
 	 		else request->send(200, "text/plain;", "");
 	 	}
-		#if UseServerSideEvent == true
 		 else if(request->method() == HTTP_POST && request->url() == PUTLINE_PATH){
 	 		String data=request->getParam("data", true, false)->value();
 	 		//DBG_PRINTF("putline:%s\n",data.c_str());
@@ -376,8 +486,35 @@ public:
 	 		brewPi.putLine(data.c_str());
 	 		request->send(200,"application/json","{}");
 	 	}
+		else
 		#endif
-		else if(request->method() == HTTP_GET && request->url() == CONFIG_PATH){
+
+		#if SupportMqttRemoteControl
+		if(request->method() == HTTP_GET && request->url() == MQTT_PATH){
+			request->send(200,"application/json",theSettings.jsonMqttRemoteControlSettings());
+	 	}else if(request->method() == HTTP_POST && request->url() == MQTT_PATH){
+	 	    if(!request->authenticate(syscfg->username, syscfg->password))
+	        return request->requestAuthentication();
+
+			if(request->hasParam("data", true)){
+				if(theSettings.dejsonMqttRemoteControlSettings(request->getParam("data", true)->value())){
+					theSettings.save();
+					request->send(200,"application/json","{}");
+					mqttRemoteControl.reset();
+				}else{
+  					request->send(500);
+					DBG_PRINTF("json format error\n");
+  					return;
+				}
+			}else{
+	  			request->send(400);
+				DBG_PRINTF("no data in post\n");
+  			}
+
+		}else 
+		#endif
+		if(request->method() == HTTP_GET && request->url() == CONFIG_PATH){
+			if(!request->authenticate(syscfg->username, syscfg->password)) return request->requestAuthentication();
 			if(request->hasParam("cfg"))
 				request->send(200,"application/json",theSettings.jsonSystemConfiguration());
 			else 
@@ -388,14 +525,20 @@ public:
 
 			if(request->hasParam("data", true)){
 				uint8_t oldMode = theSettings.systemConfiguration()->wifiMode;
-
+				DBG_PRINTF("config to save: %s\n",request->getParam("data", true)->value().c_str());
 				if(theSettings.dejsonSystemConfiguration(request->getParam("data", true)->value())){
 					theSettings.save();
+					DBG_PRINTF("config saved: %s\n",theSettings.systemConfiguration()->hostnetworkname);
 					request->send(200,"application/json","{}");
 					display.setAutoOffPeriod(theSettings.systemConfiguration()->backlite);
 
+					#if TWOFACED_LCD
+					sharedDisplayManager.setDisplayMode(theSettings.systemConfiguration()->displayMode);
+					#endif
+
 					if(oldMode !=  theSettings.systemConfiguration()->wifiMode){
-						WiFiSetup.setMode((WiFiMode)theSettings.systemConfiguration()->wifiMode);
+						DBG_PRINTF("change from %d to %d\n",oldMode,theSettings.systemConfiguration()->wifiMode);
+						WiFiSetup.setMode((WiFiMode) (theSettings.systemConfiguration()->wifiMode));
 					}
 
 					if(!request->hasParam("nb")){
@@ -432,6 +575,12 @@ public:
 	 	    if(!request->authenticate(syscfg->username, syscfg->password))
 	        return request->requestAuthentication();
 		 	request->send(200,"text/html","Done, restarting..");
+			#if SaveWiFiConfiguration
+			WiFiConfiguration *wifiCon=theSettings.getWifiConfiguration();
+			wifiCon->ssid[0]='\0';
+			wifiCon->pass[0]='\0';
+			theSettings.save();
+			#endif
 			requestRestart(true);
 	 	}else if(request->method() == HTTP_POST &&  request->url() == FLIST_PATH){
 	 	    if(!request->authenticate(syscfg->username, syscfg->password))
@@ -466,6 +615,7 @@ public:
 	 	#ifdef ENABLE_LOGGING
 	 	else if (request->url() == LOGGING_PATH){
 	 		if(request->method() == HTTP_POST){
+				if(!request->authenticate(syscfg->username, syscfg->password)) return request->requestAuthentication();
 				if(request->hasParam("data", true)){
 		    		if(theSettings.dejsonRemoteLogging(request->getParam("data", true)->value())){
 		    			request->send(200,"application/json","{}");
@@ -507,6 +657,12 @@ public:
 	 	    if(!request->authenticate(syscfg->username, syscfg->password))
 	        return request->requestAuthentication();
 			// auto cap.
+			if(request->hasParam("psi")){
+				theSettings.pressureMonitorSettings()->psi=request->getParam("psi")->value().toInt();
+				DBG_PRINTF("set pressure:%d",theSettings.pressureMonitorSettings()->psi);
+				theSettings.save();
+				PressureMonitor.configChanged();
+			}
 			bool response=true;
 			if(request->hasParam("cap")){
 				AsyncWebParameter* value = request->getParam("cap");
@@ -529,10 +685,59 @@ public:
 			capStatusReport();
 		}
 		#endif
+		#if SupportPressureTransducer
+		else if(request->url() == PRESSURE_PATH){
+	 	    if(!request->authenticate(syscfg->username, syscfg->password))
+	        return request->requestAuthentication();
+
+			if(request->method() == HTTP_GET){
+				if(request->hasParam("r")){
+					int reading=PressureMonitor.currentAdcReading();
+					request->send(200,"application/json",String("{\"a0\":")+String(reading)+String("}"));
+				}else{
+					request->send(200,"application/json",theSettings.jsonPressureMonitorSettings());
+				}
+			}else{
+				// post
+				if(!request->authenticate(syscfg->username, syscfg->password)) return request->requestAuthentication();
+
+				if(request->hasParam("data",true)){					
+					if(theSettings.dejsonPressureMonitorSettings(request->getParam("data",true)->value())){
+						theSettings.save();
+						PressureMonitor.configChanged();
+						request->send(200,"application/json","{}");
+					}else
+						DBG_PRINTF("invalid Json\n");
+						request->send(402);
+				}else{
+					DBG_PRINTF("no data\n");
+					request->send(401);
+				}
+			}
+		}
+		#endif
+		#if EnableHumidityControlSupport
+		else if(request->url() == HUMIDITY_CONTROL_PATH){
+			if(request->hasParam("m",true) &&  request->hasParam("t",true) ){
+				uint8_t mode=(uint8_t) request->getParam("m",true)->value().toInt();
+				uint8_t target=(uint8_t) request->getParam("t",true)->value().toInt();
+				humidityControl.setMode(mode);
+				humidityControl.setTarget(target);
+				theSettings.save();
+				request->send(200,"application/json","{}");
+			}else{
+				request->send(404);
+				DBG_PRINTF("missing parameter:m =%d, t=%d\n",request->hasParam("m",true), request->hasParam("t",true) );
+			}
+		}
+		#endif
 		else if(request->url() == BEER_PROFILE_PATH){
 			if(request->method() == HTTP_GET){
 				request->send(200,"application/json",theSettings.jsonBeerProfile());
 			}else{ //if(request->method() == HTTP_POST){
+
+				if(!request->authenticate(syscfg->username, syscfg->password)) return request->requestAuthentication();
+
 				if(request->hasParam("data",true)){
 					if(theSettings.dejsonBeerProfile(request->getParam("data",true)->value())){
 						theSettings.save();
@@ -553,10 +758,11 @@ public:
 	 		if(request->url().equals("/")){
 				SystemConfiguration *syscfg=theSettings.systemConfiguration();
 		 		if(!syscfg->passwordLcd){
-		 			sendFile(request,path); //request->send(SPIFFS, path);
+		 			sendFile(request,path); //request->send(FileSystem, path);
 		 			return;
 		 		}
 		 	}
+			/*
 			bool auth=true;
 
 			for(byte i=0;i< sizeof(public_list)/sizeof(const char*);i++){
@@ -565,20 +771,24 @@ public:
 						break;
 					}
 			}
-
-	 	    if(auth && !request->authenticate(syscfg->username, syscfg->password))
+			*/
+	 	    if(syscfg->passwordLcd && !request->authenticate(syscfg->username, syscfg->password))
 	        return request->requestAuthentication();
 
-	 		sendFile(request,path); //request->send(SPIFFS, path);
+	 		sendFile(request,path); //request->send(FileSystem, path);
 		}
 	 }
 
 	bool canHandle(AsyncWebServerRequest *request){
 	 	if(request->method() == HTTP_GET){
-	 		if(request->url() == POLLING_PATH || request->url() == CONFIG_PATH || request->url() == TIME_PATH
-			 || request->url() == RESETWIFI_PATH  /*|| request->url() == CONTROL_CC_PATH*/
+	 		if( request->url() == CONFIG_PATH || request->url() == TIME_PATH
+			#if UseServerSideEvent == true
+			|| request->url() == POLLING_PATH 
+			#endif
+			 || request->url() == RESETWIFI_PATH  
 			 || request->url() == GETSTATUS_PATH
 			 || request->url() == BEER_PROFILE_PATH
+			 || request->url() == MQTT_PATH
 	 		#ifdef ENABLE_LOGGING
 	 		|| request->url() == LOGGING_PATH
 	 		#endif
@@ -588,6 +798,9 @@ public:
 			#if AUTO_CAP
 			 || request->url() == CAPPER_PATH
 			#endif
+			#if SupportPressureTransducer
+			|| request->url() == PRESSURE_PATH
+			#endif
 	 		){
 	 			return true;
 			}else{
@@ -595,7 +808,7 @@ public:
 				String path=request->url();
 	 			if(path.endsWith("/")) path +=DEFAULT_INDEX_FILE;
 	 			//DBG_PRINTF("request:%s\n",path.c_str());
-				if(fileExists(path)) return true; //if(SPIFFS.exists(path)) return true;
+				if(fileExists(path)) return true; //if(FileSystem.exists(path)) return true;
 				//DBG_PRINTF("request:%s not found\n",path.c_str());
 			}
 	 	}else if(request->method() == HTTP_DELETE && request->url() == DELETE_PATH){
@@ -609,13 +822,19 @@ public:
 	 			|| request->url() ==  FPUTS_PATH || request->url() == FLIST_PATH
 	 			|| request->url() == TIME_PATH
 				|| request->url() == BEER_PROFILE_PATH
+				|| request->url() == MQTT_PATH
 	 			#ifdef ENABLE_LOGGING
 	 			|| request->url() == LOGGING_PATH
 	 			#endif
-			 #if EanbleParasiteTempControl
-			 || request->url() == ParasiteTempControlPath
-			 #endif
-
+				#if EanbleParasiteTempControl
+			 	|| request->url() == ParasiteTempControlPath
+			 	#endif
+				#if SupportPressureTransducer
+				|| request->url() == PRESSURE_PATH
+				#endif
+				#if EnableHumidityControlSupport
+				|| request->url() == HUMIDITY_CONTROL_PATH
+				#endif
 	 			)
 	 			return true;
 		}
@@ -658,27 +877,40 @@ AppleCNAHandler appleCNAHandler;
 
 
 #if AUTO_CAP
-String capControlStatus(void)
-{
+
+void capControlStatusJson(JsonObject& obj){
+	
 	uint8_t mode=autoCapControl.mode();
-	bool capped = autoCapControl.isCapOn();
-	String 	capstate=String("\"m\":") + String((int)mode) + String(",\"c\":") + String(capped);
+	obj["m"] = mode;
+	obj["c"] = autoCapControl.isCapOn()? 1:0;
 
 	if(mode == AutoCapModeGravity){
-		capstate += String(",\"g\":") + String(autoCapControl.targetGravity(),3);
+		obj["g"]=autoCapControl.targetGravity();
 	}else if (mode ==AutoCapModeTime){
-		capstate += String(",\"t\":") + String(autoCapControl.targetTime());
-	}	
-	return capstate;
-} 
+		obj["t"]=autoCapControl.targetTime();
+	}
+
+#if SupportPressureTransducer
+	PressureMonitorSettings* ps=theSettings.pressureMonitorSettings();
+	if(ps->mode == PMModeControl){
+		obj["pm"]=2;
+		obj["psi"]= ps->psi;
+	}
+#endif
+
+}
+
 void stringAvailable(const char*);
 void capStatusReport(void)
 {
-	char buf[128];
-	String capstate= capControlStatus();
 
-	sprintf(buf,"A:{\"cap\":{%s}}", capstate.c_str());
-	stringAvailable(buf);
+	DynamicJsonDocument doc(1024);
+	JsonObject cap = doc.createNestedObject("cap");
+	capControlStatusJson(cap);
+
+	String out="A:";
+	serializeJson(doc,out);
+	stringAvailable(out.c_str());
 }
 #endif
 
@@ -686,10 +918,10 @@ void greeting(std::function<void(const char*)> sendFunc)
 {
 	char buf[512];
 	// gravity related info., starting from "G"
-	//if(externalData.iSpindelEnabled()){
+	if(externalData.gravityDeviceEnabled()){
 		externalData.sseNotify(buf);
 		sendFunc(buf);
-	//}
+	} 
 
 	// misc informatoin, including
 
@@ -697,22 +929,36 @@ void greeting(std::function<void(const char*)> sendFunc)
 	const char *logname= brewLogger.currentLog();
 	if(logname == NULL) logname="";
 	SystemConfiguration *syscfg= theSettings.systemConfiguration();
+
+	DynamicJsonDocument doc(1024);
+
+	doc["nn"] = String(syscfg->titlelabel);
+	doc["ver"] =  String(BPL_VERSION);
+	doc["rssi"]= WiFi.RSSI();
+	doc["tm"] = TimeKeeper.getTimeSeconds();
+	doc["off"]= TimeKeeper.getTimezoneOffset();
+	doc["log"] = String(logname);
+
 #if AUTO_CAP
-	String capstate= capControlStatus();
-	sprintf(buf,"A:{\"nn\":\"%s\",\"ver\":\"%s\",\"rssi\":%d,\
-				\"tm\":%lu,\"off\":%ld, \"log\":\"%s\",\"cap\":{%s}}"
-		,syscfg->titlelabel,BPL_VERSION,WiFi.RSSI(),
-		TimeKeeper.getTimeSeconds(),(long int)TimeKeeper.getTimezoneOffset(),
-		logname, capstate.c_str());
+	JsonObject cap = doc.createNestedObject("cap");
+	capControlStatusJson(cap);
+
+#endif		 
+#if EanbleParasiteTempControl
 	
-#else
-	sprintf(buf,"A:{\"nn\":\"%s\",\"ver\":\"%s\",\"rssi\":%d,\"tm\":%lu,\"off\":%ld, \"log\":\"%s\"}"
-		,syscfg->titlelabel,BPL_VERSION,WiFi.RSSI(),
-		TimeKeeper.getTimeSeconds(),TimeKeeper.getTimezoneOffset(),
-		logname);
+	doc["ptc"]= serialized(parasiteTempController.getSettings());
 #endif
 
-	sendFunc(buf);
+#if EnableHumidityControlSupport
+	JsonObject hum = doc.createNestedObject("rh");
+	hum["m"] = humidityControl.mode();
+	hum["t"] = humidityControl.targetRH();
+#endif
+
+	String out="A:";
+	serializeJson(doc,out);
+
+	sendFunc(out.c_str());
 
 	// beer profile:
 	String profile=String("B:") + theSettings.jsonBeerProfile();
@@ -730,8 +976,21 @@ void greeting(std::function<void(const char*)> sendFunc)
 
 #if UseWebSocket == true
 
-AsyncWebSocket ws(WS_PATH);
+class AWSClient{
+	uint32_t _clientId;
+public:
 
+	AWSClient(AsyncWebSocketClient* client){
+		_clientId=client->id();
+	}
+	void text(AsyncWebSocket *websocket,const char* msg){
+		websocket->text(_clientId,msg);
+	}
+	uint32_t clientId(void){ return _clientId; }
+
+};
+
+AsyncWebSocket ws(WS_PATH);
 
 #if GreetingInMainLoop
 AsyncWebSocketClient * _lastWSclient=NULL;
@@ -762,17 +1021,19 @@ void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventT
 		});
 		#endif
   	} else if(type == WS_EVT_DISCONNECT){
-    	DBG_PRINTF("ws[%s][%u] disconnect: %u\n", server->url(), client->id());
+    	DBG_PRINTF("ws[%s] disconnect: %u\n", server->url(), client->id());
   	} else if(type == WS_EVT_ERROR){
     	DBG_PRINTF("ws[%s][%u] error(%u): %s\n", server->url(), client->id(), *((uint16_t*)arg), (char*)data);
   	} else if(type == WS_EVT_PONG){
     	DBG_PRINTF("ws[%s][%u] pong[%u]: %s\n", server->url(), client->id(), len, (len)?(char*)data:"");
   	} else if(type == WS_EVT_DATA){
     	AwsFrameInfo * info = (AwsFrameInfo*)arg;
+		
+//		DBG_PRINTF("ws[%u] message[%u]:", client->id(), info->len);
+
 //    	String msg = "";
     	if(info->final && info->index == 0 && info->len == len){
       		//the whole message is in a single frame and we got all of it's data
-//      		DBG_PRINTF("ws[%u] message[%lu]:", client->id(), info->len);
 
 	        for(size_t i=0; i < info->len; i++) {
         	  //msg += (char) data[i];
@@ -782,12 +1043,12 @@ void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventT
 
 		} else {
       		//message is comprised of multiple frames or the frame is split into multiple packets
-      		if(info->index == 0){
+/*      		if(info->index == 0){
         		if(info->num == 0)
-        		DBG_PRINTF("ws[%u] frame[%u] start[%lu]\n", client->id(), info->num, info->len);
-      		}
+        		DBG_PRINTF("ws[%u] frame[%u] start[%u]\n", client->id(), info->num, info->len);
+      		}*/
 
-      		DBG_PRINTF("ws[%u] frame [%lu - %lu]: ", client->id(), info->num, info->index, info->index + len);
+//      		DBG_PRINTF("ws[%u] frame [%lu - %lu]: ", client->id(), info->num, info->index, info->index + len);
 
 	        for(size_t i=0; i < info->len; i++) {
     	    	//msg += (char) data[i];
@@ -797,7 +1058,7 @@ void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventT
       		//DBG_PRINTF("%s\n",msg.c_str());
 
 			if((info->index + len) == info->len){
-				DBG_PRINTF("ws[%u] frame[%u] end[%lu]\n", client->id(), info->num, info->len);
+//				DBG_PRINTF("ws[%u] frame[%u] end[%lu]\n", client->id(), info->num, info->len);
 //        		if(info->final){
 //        			DBG_PRINTF("ws[%s][%u] %s-message end\n",  client->id());
 //        		}
@@ -812,7 +1073,7 @@ void stringAvailable(const char *str)
 	//DBG_PRINTF("BroadCast:%s\n",str);
 
 #if UseWebSocket == true
-	ws.textAll(str,strlen(str));
+	ws.textAll(str);
 #endif
 
 #if UseServerSideEvent == true
@@ -831,7 +1092,7 @@ void notifyLogStatus(void)
 
 void reportRssi(void)
 {
-	char buf[256];
+//	char buf[512];
 
 	uint8_t mode, state;
 	char unit;
@@ -842,41 +1103,54 @@ void reportRssi(void)
 	brewPi.getAllStatus(&state, &mode, &beerTemp, &beerSet, &fridgeTemp, &fridgeSet, &roomTemp);
 	display.getLine(3,statusLine);
 
+	DynamicJsonDocument doc(1024);
+	doc["rssi"]= WiFi.RSSI();
+	doc["st"] = state;
+	doc["md"] = String((char)mode);
+	doc["bt"] = (int)(beerTemp*100);
+	doc["bs"] = (int)(beerSet*100);
+	doc["ft"] = (int)(fridgeTemp*100);
+	doc["fs"] = (int)(fridgeSet*100);
+	doc["rt"] = (int)(roomTemp*100);
+	doc["sl"] = statusLine;
+	doc["tu"] = String(unit);
+
+
 #if EanbleParasiteTempControl
-	char ptcmode=parasiteTempController.getMode();
-	
-	sprintf(buf,"A:{\"rssi\":%d,\"ptc\":\"%c\",\"pt\":%u,\"ptctp\":%d,\"ptclo\":%d,\"ptcup\":%d,\
-		\"st\":%d,\"md\":\"%c\",\"bt\":%d,\"bs\":%d,\"ft\":%d,\"fs\":%d,\"rt\":%d,\"sl\":\"%s\",\"tu\":\"%c\"}",
-			WiFi.RSSI(),ptcmode,parasiteTempController.getTimeElapsed(),
-			parasiteTempController.getTemp(),parasiteTempController.getLowerBound(),parasiteTempController.getUpperBound(),
-		state,
-		mode,
-		(int)(beerTemp*100),
-		(int)(beerSet*100),
-		(int)(fridgeTemp*100),
-		(int)(fridgeSet*100),
-		(int)(roomTemp*100),
-		statusLine,
-		unit
-
-			);
-
-	stringAvailable(buf);
-#else
-	sprintf(buf,"A:{\"rssi\":%d,\"st\":%d,\"md\":\"%c\",\"bt\":%d,\"bs\":%d,\"ft\":%d,\"fs\":%d,\"rt\":%d,\"sl\":\"%s\",\"tu\":\"%c\"}",
-		WiFi.RSSI(),
-		state,
-		mode,
-		(int)(beerTemp*100),
-		(int)(beerSet*100),
-		(int)(fridgeTemp*100),
-		(int)(fridgeSet*100),
-		(int)(roomTemp*100),
-		statusLine,
-		unit
-		);
-	stringAvailable(buf);
+	doc["ptc"] = String(parasiteTempController.getMode());
+	doc["pt"] = parasiteTempController.getTimeElapsed();
+	doc["ptctp"] = parasiteTempController.getTemp();
+	doc["ptclo"] = parasiteTempController.getLowerBound();
+	doc["ptcup"] = parasiteTempController.getUpperBound();
 #endif
+
+#if SupportPressureTransducer
+	doc["pm"] = PressureMonitor.mode();
+	doc["psi"] = (int) PressureMonitor.currentPsi();
+#endif
+
+#if EnableHumidityControlSupport
+	if (humidityControl.isChamberSensorInstalled()){
+		doc["h"]= humidityControl.humidity();
+	}
+	if (humidityControl.isRoomSensorInstalled()){
+		doc["hr"]= humidityControl.roomHumidity();
+	}
+
+#endif
+
+
+	JsonObject G = doc.createNestedObject("G");
+	G["u"] = externalData.lastUpdate();
+	G["t"] = (int)(externalData.auxTemp() * 100);
+	G["r"] = externalData.rssi();
+	G["g"] = (int)(externalData.gravity() * 1000);
+
+
+	String out="A:";
+	serializeJson(doc,out);
+
+	stringAvailable(out.c_str());
 }
 
 
@@ -945,8 +1219,8 @@ public:
 				int index=request->getParam("dl")->value().toInt();
 				char buf[36];
 				brewLogger.getFilePath(buf,index);
-				if(SPIFFS.exists(buf)){
-					request->send(SPIFFS,buf,"application/octet-stream",true);
+				if(FileSystem.exists(buf)){
+					request->send(FileSystem,buf,"application/octet-stream",true);
 				}else{
 					request->send(404);
 				}
@@ -1097,18 +1371,43 @@ public:
 		DBG_PRINTF("req: %s\n", request->url().c_str());
 	 	if(request->url() == GRAVITY_PATH	) return true;
 	 	if(request->url() == GravityDeviceConfigPath) return true;
-	 	if(request->url() == GravityFormulaPath) return true;		
+	 	if(request->url() == GravityFormulaPath) return true;
+#if	SupportTiltHydrometer
+	 	if(request->url() == TiltCommandPath) return true;
+#endif
 
 	 	return false;
 	}
 
 	void handleRequest(AsyncWebServerRequest *request){
+#if	SupportTiltHydrometer
+	 	if(request->url() == TiltCommandPath){
+			 if(request->hasParam("scan")){
+				 DBG_PRINTF("scan BLE\n");
+				 tiltListener.scan([](int count,TiltHydrometerInfo *tilts){
+					String ret="{\"tilts\":[";
+						 for(int i=0;i<count;i++){
+							 ret += String("{\"c\":")+ String(tilts[i].color) +
+							 		String(",\"r\":")+ String(tilts[i].rssi) +
+									String(",\"g\":")+ String(tilts[i].gravity) +
+									String(",\"t\":")+ String(tilts[i].temperature) +
+									((i==count-1)? String("}"): String("},"));
+						 }
+					ret += "]}";
+					tiltScanResult(ret);
+				 });
+				 request->send(200);
+			 }
+			 return;
+		 }
+#endif
+
 		if(request->url() == GRAVITY_PATH){
 			if(request->method() != HTTP_POST){
 				request->send(400);
 				return;
 			}
-			stringAvailable(_buffer);
+			stringAvailable(_buffer); // send to brower to log on Javascript Console
 			processGravity(request,_data,_dataLength);
 			// Process the name
 			externalData.sseNotify(_data);
@@ -1243,26 +1542,48 @@ public:
 			if(request->hasParam("pass",true)){
 				pass = request->getParam("pass",true)->value().c_str();
 			}
+			
+			if(syscfg->wifiMode == WIFI_AP){
+				// change to WIFI_STA mode
+				syscfg->wifiMode = WIFI_AP_STA;
+			}
+
 			if(request->hasParam("ip",true) && request->hasParam("gw",true) && request->hasParam("nm",true)){
 				DBG_PRINTF("static IP\n");
 				IPAddress ip=scanIP(request->getParam("ip",true)->value().c_str());
 				IPAddress gw=scanIP(request->getParam("gw",true)->value().c_str());
 				IPAddress nm=scanIP(request->getParam("nm",true)->value().c_str());
+				
+				IPAddress dns=request->hasParam("dns",true)? scanIP(request->getParam("dns",true)->value().c_str()):IPAddress(0,0,0,0);
+
 				WiFiSetup.connect(ssid.c_str(),pass, 
 							ip,
 							gw,
-							nm
+							nm,
+							dns
 				);
 				// save to config
 				syscfg->ip = ip;
 				syscfg->gw = gw;
 				syscfg->netmask = nm;
-				theSettings.save();
+				syscfg->dns = dns;
 			}else{
+				WiFiSetup.staConfig();
+				
 				WiFiSetup.connect(ssid.c_str(),pass);
 				DBG_PRINTF("dynamic IP\n");
+				syscfg->ip = IPAddress(0,0,0,0);
+				syscfg->gw = IPAddress(0,0,0,0);
+				syscfg->netmask = IPAddress(0,0,0,0);
+				syscfg->dns = IPAddress(0,0,0,0);
 			}
-			//MDNS.notifyAPChange();		
+			theSettings.save();
+
+		#ifdef SaveWiFiConfiguration
+		DBG_PRINTF("SSID:%s\n",ssid.c_str());
+		theSettings.setWiFiConfiguration(ssid.c_str(),pass);
+		#endif
+		//MDNS.notifyAPChange();		
 		theSettings.save();
 
 		request->send(200,"application/json","{}");
@@ -1288,6 +1609,19 @@ void wiFiEvent(const char* msg){
 	sprintf(buff,"W:%s",msg);
 	stringAvailable(buff);
 	free(buff);
+
+	if(WiFi.status() == WL_CONNECTED){
+		DBG_PRINTF("channel:%d, BSSID:%s\n",WiFi.channel(),WiFi.BSSIDstr().c_str());
+		if(! TimeKeeper.isSynchronized())TimeKeeper.updateTime();
+	}
+	#if TWOFACED_LCD
+	smartDisplay.setIp(WiFi.localIP());
+	#endif
+}
+
+void tiltScanResult(String& result){
+	String report="T:" + result;
+	stringAvailable(report.c_str());
 }
 //{brewpi
 
@@ -1305,7 +1639,7 @@ DelayImpl wait = DelayImpl(DELAY_IMPL_CONFIG);
 DisplayType realDisplay;
 DisplayType DISPLAY_REF display = realDisplay;
 
-ValueActuator alarm;
+ValueActuator alarmActuator;
 
 #ifdef ESP8266_WiFi
 
@@ -1315,7 +1649,7 @@ WiFiClient serverClient;
 #endif
 void handleReset()
 {
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ESP32)
 	// The asm volatile method doesn't work on ESP8266. Instead, use ESP.restart
 	ESP.restart();
 #else
@@ -1333,6 +1667,10 @@ void brewpi_setup()
 	// We need to initialize the EEPROM on ESP8266
 	EEPROM.begin(MAX_EEPROM_SIZE_LIMIT);
 	eepromAccess.set_manual_commit(false); // TODO - Move this where it should actually belong (a class constructor)
+#endif
+
+#if FS_EEPROM
+	eepromAccess.begin();
 #endif
 
 #if BREWPI_BUZZER
@@ -1374,7 +1712,7 @@ void brewpiLoop(void)
 		lastUpdate = ticks.millis();
 
 #if BREWPI_BUZZER
-		buzzer.setActive(alarm.isActive() && !buzzer.isActive());
+		buzzer.setActive(alarmActuator.isActive() && !buzzer.isActive());
 #endif
 
 		tempControl.updateTemperatures();
@@ -1389,10 +1727,28 @@ void brewpiLoop(void)
 
 #if BREWPI_MENU
 		if (rotaryEncoder.pushed()) {
+			#if TWOFACED_LCD
+			// might not be necessary, pickSettingToChange() will go into a loop until
+			// end of menu
+			sharedDisplayManager.forcePrimary(true);
+			#endif
 			rotaryEncoder.resetPushed();
 			display.updateBacklight();
 			menu.pickSettingToChange();
+			#if TWOFACED_LCD
+			sharedDisplayManager.forcePrimary(false);
+			rotaryEncoder.setRange(1,0,2);
+			#endif
 		}
+		#if TWOFACED_LCD
+		int16_t s=rotaryEncoder.read();
+		if(s !=1){
+			DBG_PRINTF("rotaryEncoder.read()=%d\n",s);
+			if(s==0) sharedDisplayManager.previous();
+			else sharedDisplayManager.next();
+			rotaryEncoder.setRange(1,0,2);
+		}
+		#endif
 #endif
 
 		// update the lcd for the chamber being displayed
@@ -1417,7 +1773,67 @@ void brewpiLoop(void)
 
 #ifdef STATUS_LINE
 extern void makeTime(time_t timeInput, struct tm &tm);
-time_t _displayTime;
+
+typedef enum _StatusLineDisplayItem{
+StatusLineDisplayIP=0,
+StatusLineDisplayTime
+}StatusLineDisplayItem;
+
+#define DisplayTimeDuration 8
+#define DisplayIPDuration 3
+
+class StatusLine{
+protected:
+	static time_t _displayTime;
+	static time_t _switchTime;
+	static StatusLineDisplayItem _displaying;
+
+	static void _printTime(time_t now){
+		struct tm t;
+		if(_displayTime == now) return;
+		_displayTime = now;
+		makeTime(TimeKeeper.getLocalTimeSeconds(),t);
+		char buf[21];
+		sprintf(buf,"%d/%02d/%02d %02d:%02d:%02d",t.tm_year,t.tm_mon,t.tm_mday,t.tm_hour,t.tm_min,t.tm_sec);
+		display.printStatus(buf);
+	}
+	static void _printIP(void){
+		
+		IPAddress ip =(WiFiSetup.isApMode())? WiFi.softAPIP():WiFi.localIP();
+		char buf[21];
+		sprintf(buf,"IP:%d.%d.%d.%d",ip[0],ip[1],ip[2],ip[3]);
+		display.printStatus(buf);
+	}
+
+public:
+	StatusLine(){
+	}
+
+
+	static void loop(time_t now){	
+		if(now == _displayTime) return;
+
+		if(_displaying == StatusLineDisplayIP){
+			if(now - _switchTime > DisplayIPDuration){
+				_printTime(now);
+				_switchTime = now;
+				_displaying = StatusLineDisplayTime;
+			}
+		}else if(_displaying == StatusLineDisplayTime){
+			if(now - _switchTime > DisplayTimeDuration){
+				_printIP();
+				_switchTime = now;
+				_displaying = StatusLineDisplayIP;
+			}else _printTime(now);
+		}
+	}
+};
+time_t StatusLine::_displayTime;
+time_t  StatusLine::_switchTime;
+StatusLineDisplayItem StatusLine::_displaying = StatusLineDisplayTime;
+
+
+StatusLine statusLine;
 #endif
 
 
@@ -1446,6 +1862,57 @@ uint32_t _lcdReinitTime;
 #endif
 
 
+
+
+
+#if BREWPI_IIC_LCD
+
+void scanI2C(void) //VTODO
+{
+	DBG_PRINTF("Scanning I2C\n");
+	Wire.begin(PIN_SDA,PIN_SCL);
+	byte error, address;
+    //Serial.println("Scan LCD Address...\n");
+
+ 	for(address = 127; address > 0; address-- )
+  	{
+    	// The i2c_scanner uses the return value of
+    	// the Write.endTransmisstion to see if
+    	// a device did acknowledge to the address.
+		#if EnableBME280Support
+		if(address == 0x76 || address==0x77) continue;
+		#endif
+
+    	#if RotaryViaPCF8574 || ButtonViaPCF8574
+    	if(address == PCF8574_ADDRESS) continue;
+    	#endif
+
+		Wire.beginTransmission(address);
+    	error = Wire.endTransmission();
+
+		#if PressureViaADS1115
+    	if(error == 0 && address == ADS1115_ADDRESS){
+			DBG_PRINTF("Found ADS11115\n");
+			continue;
+		}
+    	#endif
+
+
+    	if (error == 0)
+    	{			
+      		DBG_PRINTF("I2C device found at address %x\n",address);
+			#if TWOFACED_LCD
+	      	SharedDisplayManager::i2cLcdAddr = address;
+			#else
+	      	LcdDisplay::i2cLcdAddr = address;
+			#endif
+    	}
+    }
+}
+
+#endif
+
+
 void setup(void){
 
 	#if SerialDebug == true
@@ -1455,14 +1922,25 @@ void setup(void){
   	#endif
 
 	//0.Initialize file system
-	//start SPI Filesystem
-  	if(!SPIFFS.begin()){
-  		// TO DO: what to do?
-  		DBG_PRINTF("SPIFFS.being() failed!\n");
-  	}else{
-  		DBG_PRINTF("SPIFFS.being() Success.\n");
-  	}
 
+	//start SPI Filesystem
+#if defined(ESP32)
+  	if(!SPIFFS.begin(true)){
+#else
+	if(!FileSystem.begin()){
+#endif
+  		// TO DO: what to do?
+  		DBG_PRINTF("FileSystem.begin() failed!\n");
+  	}else{
+  		DBG_PRINTF("FileSystem.begin() Success.\n");
+  	}
+#if BREWPI_IIC_LCD
+	scanI2C();
+#endif
+
+#if TWOFACED_LCD
+	sharedDisplayManager.init();
+#endif
 
 #ifdef EARLY_DISPLAY
 	DBG_PRINTF("Init LCD...\n");
@@ -1471,7 +1949,6 @@ void setup(void){
 	display.updateBacklight();
 	DBG_PRINTF("LCD Initialized..\n");
 #endif
-
 
 	// try open configuration
 	theSettings.load();
@@ -1488,9 +1965,23 @@ void setup(void){
 	//1. Start WiFi
 	DBG_PRINTF("Starting WiFi...\n");
 	WiFiMode wifiMode= (WiFiMode) syscfg->wifiMode;
-	WiFiSetup.staConfig(IPAddress(syscfg->ip),IPAddress(syscfg->gw),IPAddress(syscfg->netmask));
+	WiFiSetup.staConfig(IPAddress(syscfg->ip),IPAddress(syscfg->gw),IPAddress(syscfg->netmask),IPAddress(syscfg->dns));
 	WiFiSetup.onEvent(wiFiEvent);
-	WiFiSetup.begin(wifiMode,syscfg->hostnetworkname,syscfg->password);
+#ifdef SaveWiFiConfiguration
+	WiFiConfiguration *wifiCon=theSettings.getWifiConfiguration();
+
+	if(strlen(syscfg->hostnetworkname)>0)
+		WiFiSetup.begin(wifiMode,syscfg->hostnetworkname,syscfg->password,
+					wifiCon->ssid[0]? wifiCon->ssid:NULL,
+					wifiCon->pass[0]? wifiCon->pass:NULL);
+	else // something wrong with the file
+		WiFiSetup.begin(wifiMode,DEFAULT_HOSTNAME,DEFAULT_PASSWORD);
+#else
+	if(strlen(syscfg->hostnetworkname)>0)
+		WiFiSetup.begin(wifiMode,syscfg->hostnetworkname,syscfg->password);
+	else // something wrong with the file
+		WiFiSetup.begin(wifiMode,DEFAULT_HOSTNAME,DEFAULT_PASSWORD);
+#endif
 
   	DBG_PRINTF("WiFi Done!\n");
 
@@ -1538,13 +2029,20 @@ void setup(void){
 	webServer->addHandler(&externalDataHandler);
 
 	webServer->addHandler(&networkConfig);
-	//3.1.2 SPIFFS is part of the serving pages
-	//server.serveStatic("/", SPIFFS, "/","public, max-age=259200"); // 3 days
+	//3.1.2 file system is part of the serving pages
+	//server.serveStatic("/", file system, "/","public, max-age=259200"); // 3 days
 
-
+#if defined(ESP32)
+	webServer->on("/fs",[](AsyncWebServerRequest *request){
+		request->send(200,"","totalBytes:" +String(SPIFFS.totalBytes()) +
+		" usedBytes:" + String(SPIFFS.usedBytes()) +
+		" heap:"+String(ESP.getFreeHeap()));
+		//testSPIFFS();
+	});
+#else
 	webServer->on("/fs",[](AsyncWebServerRequest *request){
 		FSInfo fs_info;
-		SPIFFS.info(fs_info);
+		FileSystem.info(fs_info);
 		request->send(200,"","totalBytes:" +String(fs_info.totalBytes) +
 		" usedBytes:" + String(fs_info.usedBytes)+" blockSize:" + String(fs_info.blockSize)
 		+" pageSize:" + String(fs_info.pageSize)
@@ -1552,7 +2050,7 @@ void setup(void){
 		+" heap:"+String(ESP.getFreeHeap()));
 		//testSPIFFS();
 	});
-
+#endif
 	// 404 NOT found.
   	//called when the url is not defined here
 	webServer->onNotFound([](AsyncWebServerRequest *request){
@@ -1562,8 +2060,9 @@ void setup(void){
 	//4. start Web server
 	webServer->begin();
 	DBG_PRINTF("HTTP server started\n");
-
-
+#if SupportPressureTransducer
+	PressureMonitor.begin();
+#endif
 	// 5. try to connnect Arduino
 	brewpi_setup();
   	brewPi.begin(stringAvailable);
@@ -1581,22 +2080,39 @@ void setup(void){
 	autoCapControl.begin();
 	#endif
 
+#if SupportTiltHydrometer
+	tiltListener.begin();
+#endif
+
 #if EanbleParasiteTempControl
 	parasiteTempController.init();
 #endif
 
 
 #ifdef STATUS_LINE
-	// brewpi_setup will "clear" the screen.
-	IPAddress ip =(WiFiSetup.isApMode())? WiFi.softAPIP():WiFi.localIP();
-	char buf[21];
-	sprintf(buf,"IP:%d.%d.%d.%d",ip[0],ip[1],ip[2],ip[3]);
-	display.printStatus(buf);
-	_displayTime = TimeKeeper.getTimeSeconds() + 20;
+	statusLine.loop(0);
 #endif
 #ifdef EMIWorkaround
 	_lcdReinitTime = millis();
 #endif
+
+#if SupportMqttRemoteControl
+	//mqtt
+	mqttRemoteControl.begin();
+#endif
+
+	#if EnableHumidityControlSupport
+	humidityControl.begin();
+	#endif
+
+#if TWOFACED_LCD
+	sharedDisplayManager.add(&smartDisplay);
+	rotaryEncoder.setRange(1,0,2);
+
+	sharedDisplayManager.setDisplayMode(theSettings.systemConfiguration()->displayMode);
+#endif
+
+
 }
 
 uint32_t _rssiReportTime;
@@ -1610,6 +2126,9 @@ void loop(void){
 	brewpiLoop();
 #endif
 //}brewpi
+#ifdef ESP8266
+	MDNS.update();
+#endif
 #if EanbleParasiteTempControl
 	parasiteTempController.run();
 #endif
@@ -1619,23 +2138,21 @@ void loop(void){
 #endif
 	time_t now=TimeKeeper.getTimeSeconds();
 
-#ifdef EMIWorkAround
+#ifdef EMIWorkaround
 	if( (millis() - _lcdReinitTime) > LCDReInitPeriod){
 		_lcdReinitTime=millis();
-		display.fresh();
+		display.refresh();
 	}
 #endif
 
-#ifdef STATUS_LINE
-	if(_displayTime < now){
-		_displayTime=now;
 
-		struct tm t;
-		makeTime(TimeKeeper.getLocalTimeSeconds(),t);
-		char buf[21];
-		sprintf(buf,"%d/%02d/%02d %02d:%02d:%02d",t.tm_year,t.tm_mon,t.tm_mday,t.tm_hour,t.tm_min,t.tm_sec);
-		display.printStatus(buf);
-	}
+#if TWOFACED_LCD
+	sharedDisplayManager.loop();
+#endif
+
+
+#ifdef STATUS_LINE
+	statusLine.loop(now);
 #endif
 	if( (now - _rssiReportTime) > RssiReportPeriod){
 		_rssiReportTime =now;
@@ -1648,6 +2165,10 @@ void loop(void){
 
  	brewLogger.loop();
 
+#if SupportMqttRemoteControl
+	mqttRemoteControl.loop();
+#endif
+
  	#ifdef ENABLE_LOGGING
 
  	dataLogger.loop(now);
@@ -1658,6 +2179,18 @@ void loop(void){
 		capStatusReport();
 	}
 	#endif
+	
+	#if SupportPressureTransducer
+	PressureMonitor.loop();
+	#endif
+	
+	#if SupportTiltHydrometer
+	tiltListener.loop();
+	#endif
+
+	#if EnableHumidityControlSupport
+	humidityControl.loop();
+	#endif
 
 	#if GreetingInMainLoop
 	sayHello();
@@ -1665,7 +2198,6 @@ void loop(void){
 
 	if(!IS_RESTARTING){
 		WiFiSetup.stayConnected();
-		if(WiFiSetup.isApMode()) TimeKeeper.setInternetAccessibility(false);
 	}
 
   	if(_systemState ==SystemStateRestartPending){

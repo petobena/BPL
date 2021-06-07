@@ -46,7 +46,7 @@ public:
 
 //  void createChar(uint8_t, uint8_t[]);
   void setCursor(uint8_t, uint8_t);
-  void print(char* str);
+  void print(const char* str);
 
 #ifdef STATUS_LINE
 	void printStatus(char* str);
@@ -58,9 +58,13 @@ public:
 #ifdef print_P_inline
   // print a string stored in PROGMEM
   void print_P(const char * str) {
-    char buf[21]; // create buffer in RAM
+    #if ESP32
+    print((char*)str);
+    #else
+    char buf[21]; // create buffer in RAM    
     strcpy_P(buf, str); // copy string to RAM
     print(buf); // print from RAM
+    #endif
   }
 #else
   void print_P(const char * str);
@@ -91,6 +95,11 @@ public:
 
   using Print::write;
   void setAutoOffPeriod(uint32 period){ backlightAutoOffPeriod = period; }
+
+#ifdef EMIWorkaround
+  void refresh(){}
+#endif
+
 
 private:
   uint32_t backlightAutoOffPeriod;

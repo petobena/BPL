@@ -1,4 +1,6 @@
-        /* chart.js */
+/* chart.js */
+var  CHART_VERSION = 6;
+         
         // gravity tracking
         var GravityFilter = {
             b: 0.1,
@@ -80,8 +82,8 @@
             } else fgstate(0);
         }
         // gravity tracking
-        var GravityIndex = 6;
-        var TiltAngleIndex = 7;
+        var GravityAndTiltIndex = 6;
+        var PSIIndex = 7;
         var RoomTemperatureIndex = 4;
 
         var BrewChart = function(div) {
@@ -106,6 +108,15 @@
         var colorHeatingMinTime = "rgba(255, 0, 0, 0.6)";
         var colorCoolingMinTime = "rgba(0, 0, 255, 0.6)";
         var colorWaitingPeakDetect = "rgba(0, 0, 0, 0.2)";
+
+        var colorPressure="#0000EE";
+        var colorPressureSet="rgb(240, 100, 100)";
+        var colorCarbonation="gray";
+
+        var colorHumidity="#2222DD";
+        var colorHumiditySet="#EE1111";
+        var colorRoomHumidity="#AAAAAA";
+
         var STATE_LINE_WIDTH = 15;
         var STATES = [{
             name: "IDLE",
@@ -164,11 +175,16 @@
             o: "Off",
             p: "Profile"
         };
-        BrewChart.Colors = ["rgb(240, 100, 100)", "rgb(41,170,41)", "rgb(89, 184, 255)", "rgb(255, 161, 76)", "#AAAAAA", "#f5e127", "rgb(153,0,153)", "#000abb"];
+        BrewChart.Colors = ["rgb(240, 100, 100)", "rgb(41,170,41)", "rgb(89, 184, 255)", "rgb(255, 161, 76)", "#AAAAAA", "#f5e127", "rgb(153,0,153)", "#000abb",
+                        colorPressure,colorPressureSet,colorCarbonation,
+                        colorHumidity,colorHumiditySet,colorRoomHumidity];
         BrewChart.Labels = ['Time', 'beerSet', 'beerTemp', 'fridgeTemp', 'fridgeSet', 'roomTemp', 'auxTemp', 'gravity', 'filtersg'];
-        BrewChart.ClassLabels = ['', 'beer-set', 'beer-temp', 'fridge-temp', 'fridge-set', 'room-temp', 'aux-temp', 'gravity', 'filtersg'];
-        var BeerTempLine = 2;
+        BrewChart.ClassLabels = ['', 'beer-set', 'beer-temp', 'fridge-temp', 'fridge-set', 'room-temp', 'aux-temp', 'gravity', 'filtersg',
+                            'pressure','pressure-set','carbonation',
+                            'humidity','humidity-set','room-humidity'];
+
         var BeerSetLine = 1;
+        var BeerTempLine = 2;
         var FridgeTempLine = 3;
         var FridgeSetLine = 4;
         var RoomTempLine = 5;
@@ -176,8 +192,21 @@
         var GravityLine = 7;
         var FilteredSgLine = 8;
 
+        var PressureLine = 9;
+        var PressureSetLine = 10;
+        var CarbonationLine = 11;
+
+
+        var ChamberHumidityLine = 12;
+        var SetHumidityLine = 13;
+        var RoomHumidityLine = 14;
+
+        var NumberOfLines =14;
+
+        var PSIDataIndex = 8;
+
         BrewChart.prototype.clearData = function() {
-            this.laststat = [NaN, NaN, NaN, NaN, NaN, NaN, NaN, NaN];
+            this.laststat = [NaN, NaN, NaN, NaN, NaN, NaN, NaN, NaN,NaN];
             this.sg = NaN;
             this.og = NaN;
         };
@@ -238,10 +267,28 @@
             if (!isNaN(state)) {
                 Q('.beer-chart-state').innerHTML = STATES[state].text;
             }
+            if(this.psiAvail){
+                var psi = this.pchart.getValue(row, 1);
+                Q(".chart-legend-row.pressure .legend-value").innerHTML = (psi == null || isNaN(psi))? "--":psi.toFixed(1);
+                var psiSet=this.pchart.getValue(row, 2 );
+                Q(".chart-legend-row.pressure-set .legend-value").innerHTML = (psiSet == null || isNaN(psiSet))? "--":Math.round(psiSet);
+                var carbo=this.pchart.getValue(row, 3 );
+                Q(".chart-legend-row.carbonation .legend-value").innerHTML = (carbo == null || isNaN(carbo))? "--":carbo.toFixed(1);
+            }
+            if(this.rhValid){
+                var rh = this.hchart.getValue(row, 1);
+                Q(".chart-legend-row.humidity .legend-value").innerHTML = (isNaN(rh) || rh == null || rh==255)? "--":(rh+"%");
+                var sh = this.hchart.getValue(row, 2);
+                Q(".chart-legend-row.set-humidity .legend-value").innerHTML = (isNaN(sh) || sh == null || sh==255)? "--":(sh+"%");
+                var room = this.hchart.getValue(row, 3);
+                Q(".chart-legend-row.room-humidity .legend-value").innerHTML = (isNaN(room) || room == null || room==255)? "--":(room+"%");
+            }
+
         };
 
         BrewChart.prototype.hideLegend = function() {
             var v = document.querySelectorAll(".legend-value");
+
             v.forEach(function(val) {
                 val.innerHTML = "--";
             });
@@ -267,25 +314,89 @@
             this.dateLabel = Q(".beer-chart-legend-time").innerHTML;
         };
         BrewChart.prototype.toggleLine = function(line) {
-            this.shownlist[line] = !this.shownlist[line];
+            var me=this;
+            me.shownlist[line] = !me.shownlist[line];
             var divclass = BrewChart.ClassLabels[line];
-            if (this.shownlist[line]) {
-                if (Q("." + divclass + " .toggle")) Q("." + divclass + " .toggle").style.backgroundColor = Q(".chart-legend-row." + divclass).style.color;
-                this.chart.setVisibility(line - 1, true);
-            } else {
-                if (Q("." + divclass + " .toggle")) Q("." + divclass + " .toggle").style.backgroundColor = "transparent";
-                this.chart.setVisibility(line - 1, false);
-            }
+            
+            var chart = (line >= ChamberHumidityLine)? me.hchart:(line >= PressureLine)? me.pchart:me.chart;
+            var base=(line >= ChamberHumidityLine)? ChamberHumidityLine:(line >= PressureLine)? PressureLine:1;
+            chart.setVisibility(line - base, me.shownlist[line]);
+
+            if (Q("." + divclass + " .toggle")) Q("." + divclass + " .toggle").style.backgroundColor =
+                (me.shownlist[line])? Q(".chart-legend-row." + divclass).style.color:"transparent";
         };
         BrewChart.prototype.setLabels = function(y1, y2) {
             this.ylabel = y1;
             this.y2label = y2;
         };
+        BrewChart.prototype.setPChart = function(id,label,carbonation) {
+            this.pcid=id;
+            this.plabel=label;
+            this.clabel=carbonation;
+        };
+        BrewChart.prototype.createPSIChart = function() {
+            var t=this;
+            var ldiv = document.createElement("div");
+            ldiv.className = "hide";
+            document.body.appendChild(ldiv);
+            var opt = {
+                labels: ["Time","psi","psiset","co2"],
+                colors: BrewChart.Colors.slice(PressureLine-1,CarbonationLine-1),
+                connectSeparatedPoints: true,
+                ylabel: t.plabel,
+                y2label: t.clabel,
+                series: {
+                    'co2': {
+                        axis: 'y2',
+                        drawPoints: false
+                    }
+                }, 
+
+                axisLabelFontSize: 12,
+//                animatedZooms: true,
+                gridLineColor: '#ccc',
+                gridLineWidth: '0.1px',
+                labelsDiv: ldiv,
+                labelsDivStyles: {
+                    'display': 'none'
+                },
+                //displayAnnotations: true,
+                //showRangeSelector: true,
+                strokeWidth: 1,
+                axes: {
+                    y: {
+                        valueFormatter: function(y) {
+                            return y.toFixed(1);
+                        },
+                        axisLabelFormatter: function(y) {
+                            return y.toFixed(1);
+                        }
+                    },
+                    y2: {
+                        valueFormatter: function(y) {
+                            return y.toFixed(1);
+                        },
+                        axisLabelFormatter: function(y) {
+                            return y.toFixed(1);
+                        }
+                    }
+                }, 
+                highlightCallback: function(e, x, pts, row) {
+                    t.showLegend(x, row);
+                },
+                unhighlightCallback: function(e) {
+                    t.hideLegend();
+                }
+            };
+            t.pchart = new Dygraph(document.getElementById(t.pcid), t.psi, opt);
+            t.pchart.setVisibility(0,true);
+        };
         BrewChart.prototype.createChart = function() {
             var t = this;
             t.initLegend();
-            t.shownlist = [true, true, true, true, true, true, true, true, true];
-
+            t.shownlist =[];
+            for(var i=0;i<=NumberOfLines;i++) t.shownlist.push(true);
+            t.showPsi = true;
             var ldiv = document.createElement("div");
             ldiv.className = "hide";
             var ylabel = (t.ylabel ? t.ylabel : 'Temperature') + '(&deg;' + (t.celius ? 'C' : 'F') + ')';
@@ -293,7 +404,7 @@
             document.body.appendChild(ldiv);
             var opt = {
                 labels: BrewChart.Labels,
-                colors: BrewChart.Colors,
+                colors: BrewChart.Colors.slice(0,FilteredSgLine-1),
                 connectSeparatedPoints: true,
                 ylabel: ylabel,
                 y2label: y2label,
@@ -359,7 +470,27 @@
                         } finally {
                             ctx.restore();
                         }
+                }
+/*                ,
+                interactionModel:{ 
+                    mousedown: Dygraph.defaultInteractionModel.mousedown, 
+                    mousemove: Dygraph.defaultInteractionModel.mousemove, 
+                    mouseup: Dygraph.defaultInteractionModel.mouseup, 
+//                    touchstart:Dygraph.defaultInteractionModel.touchstart,
+                    touchstart: function(event, g, context){
+                        event.stopPropagation();
+                        t.chart.setSelection(t.findNearestRow(g,t.chart.toDataXCoord(event.touches[0].clientX)));
+                    }, 
+                    touchend: Dygraph.defaultInteractionModel.mouseup, 
+//                    touchend:function(event,g,context){
+//                    },
+//                    touchmove: Dygraph.defaultInteractionModel.touchmove
+                    touchmove:function(event,g,context){
+                        event.stopPropagation();
+                        t.chart.setSelection(t.findNearestRow(g,t.chart.toDataXCoord(event.touches[0].clientX)));
                     }
+                }
+*/
                     /*                drawCallback: function(beerChart, is_initial) {
                                         if (is_initial) {
                                             if (t.anno.length > 0) {
@@ -466,7 +597,7 @@
         BrewChart.testData = function(data) {
             if (data[0] != 0xFF) return false;
             var s = data[1] & 0x07;
-            if (s != 5) return false;
+            if (s != CHART_VERSION) return false;
 
             return {
                 sensor: s,
@@ -514,12 +645,12 @@
         BrewChart.prototype.getCalibration = function() {
             var pairs = [];
             for (var i = 0; i < this.data.length; i++) {
-                if (this.data[i][GravityLine]) {
+                if (this.rawSG[i]) {
                     var data = this.getTiltAround(i);
                     // corrected the reading into current beer data
                     if (data) {
                         var beerTemp = this.celius ? C2F(data[1]) : data[1];
-                        var gravity = this.data[i][GravityLine];
+                        var gravity = this.rawSG[i];
                         var converted;
                         if (this.plato)
                             converted = BrewMath.sg2pla(BrewMath.tempCorrectionF(BrewMath.pla2sg(gravity), C2F(this.coTemp), beerTemp));
@@ -590,7 +721,7 @@
                 var d0 = data[i++];
                 var d1 = data[i++];
                 if (d0 == 0xFF) { // header. 
-                    if ((d1 & 0xF) != 5) {
+                    if ((d1 & 0xF) != CHART_VERSION) {
                         alert("<%= script_log_version_mismatched %>");
                         return;
                     }
@@ -611,11 +742,22 @@
                     t.state = [];
                     t.angles = [];
                     t.rawSG = [];
+                    t.psi = [];
                     t.cstate = 0;
                     t.coTemp = 20;
                     t.cal_igmask = 0;
+                    t.specificGravity = null;
+                    t.rh=[];
+                    t.lastRh=255;
+                    t.lastRoomRh=255;
+                    t.lastSetRh=255;
+                    t.rhValid=false;
+
+                    t.targetPsi = NaN; // to denote "no line/point"
+
                     this.clearData();
                     newchart = true;
+                    t.psiAvail = false;
                     // gravity tracking
                     GravityFilter.reset();
                     GravityTracker.init();
@@ -625,13 +767,19 @@
                 } else if (d0 == 0xF4) { // mode
                     //console.log(""+t.ctime/t.interval +" Stage:"+d1);
                     t.addMode(d1, t.ctime * 1000);
+                } else if (d0 == 0xF5) { // targetPSI
+                    t.targetPsi = (d1==0)? NaN:d1;
                 } else if (d0 == 0xF1) { // state
                     t.cstate = d1;
+                } else if (d0 == 0xF6) { // Time Sync
+                    var utime = (data[i] << 24) + (data[i + 1] << 16) + (data[i + 2] << 8) + data[i + 3];
+                    if(utime > t.ctime) t.ctime =utime;
                 } else if (d0 == 0xFE) { // resume
                     t.lidx = 0;
                     var d2 = data[i++];
                     var d3 = data[i++];
                     var tdiff = d3 + (d2 << 8) + (d1 << 16);
+                    if(tdiff > 30*24*60*60) tdiff= 30*60; // it's wrong if it's too long.
                     var ntime = t.starttime + tdiff;
                     if (ntime > t.ctime) {
                         // add a gap to it                   
@@ -656,12 +804,31 @@
                         t.angles.push(null);
                         t.rawSG.push[null];
                     }*/
-
+                } else if (d0 == 0xFC) { //Humidity
+                    
+                    if(d1 != 0xFF){
+                        if(d1 & 0x80){ // room
+                            t.lastRoomRh = d1 & 0x7F;
+                            t.rhValid=true;
+                        }else{
+                            t.lastRh = d1;
+                            t.rhValid=true;
+                        }
+                    }else if(t.rhValid){
+                        t.lastRh = d1;
+                    }
+                } else if (d0 == 0xFD) { //Humidity target
+                    t.lastSetRh = d1;
                 } else if (d0 == 0xF8) { //OG
                     var hh = data[i++];
                     var ll = data[i++];
                     var v = (hh & 0x7F) * 256 + ll;
                     t.og = t.plato ? v / 100 : v / 10000;
+                } else if (d0 == 0xFB) { //SG
+                    var hh = data[i++];
+                    var ll = data[i++];
+                    var v = (hh & 0x7F) * 256 + ll;
+                    t.specificGravity = t.plato ? v / 100 : v / 10000;
                 } else if (d0 == 0xFA) { //Ignored mask
                     var b2 = data[i++];
                     var b3 = data[i++];
@@ -683,13 +850,22 @@
                     t.processRecord();
                 } else if (d0 < 128) { // temp. or gravity
                     var tp = d0 * 256 + d1;
-                    if (t.lidx == GravityIndex) {
-                        tp = (tp == 0x7FFF) ? NaN : (t.plato ? tp / 100 : ((tp > 8000) ? tp / 10000 : tp / 1000));
-                        sgPoint = true;
-                        // gravity tracking
-                    } else if (t.lidx == TiltAngleIndex) {
-                        tp = (tp == 0x7FFF) ? NaN : (tp / 100);
+                    if (t.lidx == GravityAndTiltIndex) {
+                        // gravity or gravity
+                        if(t.calibrating){
+                            // tilt value
+                            tp = (tp == 0x7FFF) ? NaN : (tp / 100);
+                        }else{
+                            tp = (tp == 0x7FFF) ? NaN : (t.plato ? tp / 100 : ((tp > 8000) ? tp / 10000 : tp / 1000));
+                            sgPoint = true;
+                        }
+                    } else if (t.lidx == PSIIndex) {
+                        // pressure
+                        if(tp == 0x7FFF) tp=null;
+                        else tp =  tp / 10 - 100;
+                        
                     } else {
+                        // temperature
                         tp = (tp == 0x7FFF) ? NaN : tp / 100;
                         if (tp >= 225) tp = 225 - tp;
                     }
@@ -721,6 +897,16 @@
             if (typeof this.chart == "undefined") return;
             this.chart.updateOptions({ dateWindow: range });
         };
+        BrewChart.prototype.desync=function(){
+            if(typeof this.sync != "undefined") this.sync.detach();
+        };
+        BrewChart.prototype.synchronize=function(){
+            var t=this;
+            var charts=[t.chart];
+            if(t.psiAvail) charts.push(t.pchart);
+            if(t.rhValid) charts.push(t.hchart);
+            if(charts.length >1) t.sync = Dygraph.synchronize(charts,{selection: true,zoom:true,range:false});
+        };
         BrewChart.prototype.updateChart = function() {
             var t = this;
             if (typeof t.chart == "undefined") t.createChart();
@@ -728,31 +914,78 @@
                 'file': t.data
             });
             t.chart.setAnnotations(t.anno);
+            var sync=false;
+            if(t.psiAvail){
+                if(typeof t.pchart == "undefined"){
+                    document.querySelectorAll(".pressure-group").forEach(function(ele){
+                        ele.classList.remove("forced-hidden");
+                    });
+
+                    t.createPSIChart();
+                    sync=true;  
+                }
+                else t.pchart.updateOptions({
+                    'file': t.psi,
+                    'dateWindow':[t.psi[0][0],t.psi[t.psi.length-1][0]]
+                });
+            }
+
+            if(t.rhValid){
+                if(typeof t.hchart == "undefined"){
+                    document.querySelectorAll(".humidity-group").forEach(function(ele){
+                        ele.classList.remove("forced-hidden");
+                    });
+
+                    t.createHumidityChart();
+                    sync=true;  
+                }
+                else t.hchart.updateOptions({
+                    'file': t.rh,
+                    'dateWindow':[t.rh[0][0],t.rh[t.rh.length-1][0]]                    
+                });
+            }
+
+            if(sync) t.synchronize();
+
         };
         BrewChart.prototype.processRecord = function() {
             var t = this;
+            // fill blank/unchanged fileds by checking the change mask(t.chnages)
             while ((((1 << t.lidx) & t.changes) == 0) && t.lidx < t.numData) {
-                t.dataset.push((t.lidx > RoomTemperatureIndex) ? null : t.laststat[t.lidx]);
+                // gravity data is independant, use "null" to connect the line. (NaN) to disconnect.
+
+                t.dataset.push((t.lidx > RoomTemperatureIndex && t.lidx != PSIDataIndex) ? null : t.laststat[t.lidx]);
                 t.lidx++;
             }
             if (t.lidx >= t.numData) {
-                var dataset = t.dataset.slice(0, 8);
-                var rawSG = t.dataset[GravityLine];
-                // gravity tracking
+               // already get all data in a period record
+                // get all data
+                var minuteRecord = t.dataset.slice(0, 8);
+    
+                // handle gravity
+                //  1. calculated
+                //  2. in period record
+                //  3. in special record
+                
                 var sg = NaN;
-                if (!t.calculateSG && t.dataset[GravityLine] != null) {
-                    sg = t.dataset[GravityLine];
+                var gravityTilt = t.dataset[GravityLine];
+                if(! t.calibrating){
+                    if(gravityTilt != null) sg = gravityTilt;
+                }else if (!t.calculateSG && t.specificGravity != null) {
+                    // calibrating, but not having formula
+                    // if "gravity" data is available and currently not "calculating"(first run or not calibrating)
+                    sg = t.specificGravity;
                 } else if (t.calculateSG) {
+                    // must be in calibrating mode
                     // data field #8 is tilt in source data
-                    if (t.dataset[8] == null) dataset[GravityLine] = null;
-                    else {
-                        var temp = (this.celius) ? C2F(dataset[AuxTempLine]) : dataset[AuxTempLine];
-                        sg = t.sgByTilt(t.dataset[8]);
+                    if (minuteRecord[GravityLine] != null){
+                        var temp = (this.celius) ? C2F(t.dataset[AuxTempLine]) : t.dataset[AuxTempLine];
+                        sg = t.sgByTilt(t.dataset[GravityLine]);
 
                         if (t.plato) {
                             sg = BrewMath.sg2pla(BrewMath.tempCorrectionF(BrewMath.pla2sg(sg), temp, C2F(t.coTemp)));
                         }
-                        dataset[GravityLine] = sg;
+                        minuteRecord[GravityLine] = sg;
                     }
                 }
                 if (!isNaN(sg)) {
@@ -764,14 +997,74 @@
                         GravityTracker.add(Math.round(t.filterSg * 1000), t.ctime);
                 }
 
-                if (!isNaN(t.sg)) dataset.push(t.filterSg);
-                else dataset.push(null);
+                if (!isNaN(t.sg)) minuteRecord.push(t.filterSg);
+                else minuteRecord.push(null);
 
-                t.data.push(dataset);
+                if(! isNaN(t.dataset[PSIDataIndex]) && t.dataset[PSIDataIndex]!=null) t.psiAvail = true;
+
+                var vol =null;
+                if(! isNaN(t.dataset[PSIDataIndex]) && t.dataset[PSIDataIndex]!=null){
+                    if(!isNaN(t.dataset[BeerTempLine])){
+                        var T = (t.celius)? C2F(t.dataset[BeerTempLine]):t.dataset[BeerTempLine];
+                        vol = (t.dataset[PSIDataIndex] + 14.695) * (0.01821 + 0.090115 * Math.exp( (32 - T)/43.11 )) - 0.003342;
+                        vol = Math.round(vol * 10)/10.0;
+                    }
+                }
+                t.psi.push( [t.dataset[0], t.dataset[PSIDataIndex],t.targetPsi,vol]);
+                
+                t.data.push(minuteRecord);
                 t.state.push(t.cstate);
-                t.angles.push(t.dataset[8]);
-                t.rawSG.push(rawSG);
+ 
+                if(t.calibrating){
+                    t.angles.push(gravityTilt);
+                    t.rawSG.push(t.specificGravity);
+                    t.specificGravity = null;
+                }
+                // humidity
+                t.rh.push([t.dataset[0],
+                        (t.lastRh <=100)? t.lastRh:NaN,
+                        (t.lastSetRh<=100)? t.lastSetRh:NaN,
+                        (t.lastRoomRh <=100)? t.lastRoomRh:NaN]);
+                
+
                 t.incTime(); // add one time interval
             }
+        };
+
+
+        BrewChart.prototype.setHChart = function(id,label) {
+            this.hcid=id;
+            this.hlabel=label;
+        };
+        BrewChart.prototype.createHumidityChart = function() {
+            var t=this;
+            var ldiv = document.createElement("div");
+            ldiv.className = "hide";
+            document.body.appendChild(ldiv);
+
+            t.hchart = new Dygraph(document.getElementById(t.hcid), t.rh, {
+                labels: ["Time","rh","set","Room"],
+                colors: BrewChart.Colors.slice(ChamberHumidityLine-1,RoomHumidityLine-1),
+                connectSeparatedPoints: true,
+                ylabel: t.hlabel,
+                y2label: "%",
+                axisLabelFontSize: 12,
+                gridLineColor: '#ccc',
+                gridLineWidth: '0.1px',
+                labelsDiv: ldiv,
+                labelsDivStyles: {
+                    'display': 'none'
+                },
+                //displayAnnotations: true,
+                //showRangeSelector: true,
+                strokeWidth: 1,
+                highlightCallback: function(e, x, pts, row) {
+                    t.showLegend(x, row);
+                },
+                unhighlightCallback: function(e) {
+                    t.hideLegend();
+                }
+            });
+            t.hchart.setVisibility(0,true);
         };
         /* end of chart.js */

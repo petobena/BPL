@@ -1,8 +1,18 @@
 #include <ArduinoJson.h>
 #include "ExternalData.h"
+#if SupportTiltHydrometer
+#include "TiltListener.h"
+#endif
+
+#if TWOFACED_LCD
+
+#include "SharedLcd.h"
+
+#endif
 
 ExternalData externalData;
 
+#define TiltFilterParameter 0.15
 
 float Brix2SG(float brix){
  return (brix / (258.6-((brix / 258.2)*227.1))) + 1;
@@ -26,8 +36,13 @@ void ExternalData::waitFormula(){
 }
 
 bool ExternalData::iSpindelEnabled(void){
-    return _cfg->ispindelEnable;
+    return _cfg->gravityDeviceType == GravityDeviceIspindel;
 }
+
+bool ExternalData::gravityDeviceEnabled(void){
+    return _cfg->gravityDeviceType != GravityDeviceNone;
+}
+
 
 float ExternalData::hydrometerCalibration(void){ 
     return _cfg->ispindelCalibrationBaseTemp;
@@ -35,6 +50,28 @@ float ExternalData::hydrometerCalibration(void){
 
 void ExternalData::sseNotify(char *buf){
 
+	DynamicJsonDocument doc(1024);
+
+	doc["dev"] = _cfg->gravityDeviceType;
+	doc["name"] = (_ispindelName)? _ispindelName:"Unknown";
+	doc["battery"] =_deviceVoltage;
+	doc["sg"] =_gravity;
+	doc["angle"] = _ispindelTilt;
+	doc["lu"] = _lastUpdate;
+	doc["lpf"] = filter.beta();
+	doc["stpt"] = _cfg->stableThreshold;
+	doc["fpt"] = _cfg->numberCalPoints;
+	doc["ctemp"] = _cfg->ispindelCalibrationBaseTemp;
+	doc["plato"] = _cfg->usePlato;
+
+	#if SupportTiltHydrometer
+	doc["tiltraw"] = _tiltRawGravity;
+	#endif
+
+	buf[0]='G';
+	buf[1]=':';
+	serializeJson(doc, buf+2,256);
+#if 0
 		char strbattery[8];
 		int len=sprintFloat(strbattery,_deviceVoltage,2);
 		strbattery[len]='\0';
@@ -51,35 +88,114 @@ void ExternalData::sseNotify(char *buf){
 		len=sprintFloat(strtilt,_ispindelTilt,2);
 		strtilt[len]='\0';
 
-		char coeff[4][20];
+/*		char coeff[4][20];
 		for(int i=0;i<4;i++){
 			len=sprintFloat(coeff[i],_cfg->ispindelCoefficients[i],9);
 			coeff[i][len]='\0';	
 		}
+		*/
+		char strRssi[32];
+		if(_rssiValid){
+			len=sprintf(strRssi,",\"rssi\":%d",_rssi);
+			strRssi[len]='\0';
+		}else{
+			strRssi[1]=' ';
+			strRssi[0]='\0';
+		} 
+		
+		#if SupportTiltHydrometer
+		char strRawTilt[8];
+		len=sprintFloat(strRawTilt,_tiltRawGravity,3);
+		strRawTilt[len]='\0';
+		#else
+		char *strRawTilt ="0";
+		#endif
 
 		const char *spname=(_ispindelName)? _ispindelName:"Unknown";
-		sprintf(buf,"G:{\"name\":\"%s\",\"battery\":%s,\"sg\":%s,\"angle\":%s,\"lu\":%ld,\"lpf\":%s,\"stpt\":%d,\"fpt\":%d,\"ctemp\":%d,\"plato\":%d}",
+		sprintf(buf,"G:{\"dev\":%d,\"name\":\"%s\",\"battery\":%s,\"sg\":%s,\"angle\":%s %s,\"lu\":%ld,\"lpf\":%s,\"stpt\":%d,\"fpt\":%d,\"ctemp\":%d,\"plato\":%d,\"tiltraw\":%s}",
+					_cfg->gravityDeviceType,
 					spname, 
 					strbattery,
 					strgravity,
 					strtilt,
-					_lastUpdate,slowpassfilter,_cfg->stableThreshold,
+					strRssi,
+					_lastUpdate,
+					slowpassfilter,
+					_cfg->stableThreshold,
 					_cfg->numberCalPoints,
                     _cfg->ispindelCalibrationBaseTemp,
-					_cfg->usePlato);
+					_cfg->usePlato,
+					strRawTilt);
+#endif
 }
 
+#if SupportTiltHydrometer
+void ExternalData::setTiltInfo(uint16_t gravity, uint16_t temperature, int rssi){
+	_tiltRawGravity = gravity;
+	float sg =(float) gravity /1000.0;
+	float csg = _tcfg->coefficients[0] 
+			 +  _tcfg->coefficients[1] * sg 
+			 +  _tcfg->coefficients[2] * sg * sg
+			 +  _tcfg->coefficients[3] * sg * sg * sg; 
+
+
+	setAuxTemperatureCelsius( ((float)temperature  -32.0)* 5.0/9.0);
+	setDeviceRssi(rssi);
+	float fgravity =(_cfg->usePlato)? SG2Brix(csg):csg;
+	setGravity(fgravity, TimeKeeper.getTimeSeconds());
+	// display
+
+	#if TWOFACED_LCD
+	// duplicated code, I know...
+	char unit;
+	float max,min;
+
+	brewPi.getTemperatureSetting(&unit,&min,&max);
+	smartDisplay.gravityDeviceData(fgravity,(unit =='C')? ((float)temperature  -32.0)* 5.0/9.0:temperature,_lastUpdate,unit,_cfg->usePlato);
+	#endif
+
+}
+#endif
+
+void ExternalData::reconfig(void){
+
+	#if SupportTiltHydrometer
+	if(_cfg->gravityDeviceType != GravityDeviceTilt) tiltListener.stopListen();
+	#endif
+
+	if(_cfg->gravityDeviceType == GravityDeviceIspindel){	    
+		filter.setBeta(_cfg->lpfBeta);		
+	}
+	#if SupportTiltHydrometer
+	else if(_cfg->gravityDeviceType == GravityDeviceTilt){
+	    filter.setBeta(TiltFilterParameter);
+		tiltListener.listen((TiltColor) _tcfg->tiltColor,[&](TiltHydrometerInfo& info){
+			setTiltInfo(info.gravity,info.temperature,info.rssi);
+		});
+	}
+	#endif
+}
 
 void ExternalData::loadConfig(void){
     _cfg = theSettings.GravityConfig();
-    filter.setBeta(_cfg->lpfBeta);
+#if SupportTiltHydrometer	
+	_tcfg = theSettings.tiltConfiguration();
+#endif
+	reconfig();
 }
 
 
 bool ExternalData::processconfig(char* configdata){
    bool ret= theSettings.dejsonGravityConfig(configdata);
    if(ret){
+	   #if !SupportTiltHydrometer
+	   if(_cfg->gravityDeviceType == GravityDeviceTilt){
+		   return false;
+	   }
+	   #endif
+
 	   theSettings.save();
+	   reconfig();
    }
    return ret;
 }
@@ -105,16 +221,11 @@ void ExternalData::setOriginalGravity(float og){
 #endif
 }
 
-void ExternalData::setTilt(float tilt,float temp,time_t now){
-	_lastUpdate=now;
-	_ispindelTilt=tilt;
-
-	// add tilt anyway
-	brewLogger.addTiltAngle(tilt);
+float ExternalData::calculateGravitybyAngle(float tilt,float temp){
 
 	if(_calibrating && _cfg->numberCalPoints ==0){
 		DBG_PRINTF("No valid formula!\n");
-		return; // don't calculate if formula is not available.
+		return 0; // don't calculate if formula is not available.
 	}
 		// calculate plato
 	float sg = _cfg->ispindelCoefficients[0]
@@ -129,8 +240,7 @@ void ExternalData::setTilt(float tilt,float temp,time_t now){
 		}else
 	    	sg = temperatureCorrection(sg,C2F(temp),C2F((float)_cfg->ispindelCalibrationBaseTemp));
 	}
-	// update, gravity data calculated
-	setGravity(sg,now,!_calibrating); // save only when not calibrating.
+	return sg;
 }
 
 void ExternalData::setGravity(float sg, time_t now,bool log){
@@ -191,11 +301,16 @@ bool ExternalData::processGravityReport(char data[],size_t length, bool authenti
 {
 	//const int BUFFER_SIZE = JSON_OBJECT_SIZE(20);
 	//StaticJsonBuffer<BUFFER_SIZE> jsonBuffer;
+	#if ARDUINOJSON_VERSION_MAJOR == 6
+	DynamicJsonDocument root(512);
+	auto jsonerror=deserializeJson(root,data,length);
+	if(jsonerror 
+	#else
 	DynamicJsonBuffer jsonBuffer(512);
 	JsonObject& root = jsonBuffer.parseObject((char*)data,length);
-
-
-	if (!root.success() || !root.containsKey("name")){
+	if (!root.success() 
+	#endif
+		|| !root.containsKey("name")){
   		DBG_PRINTF("Invalid JSON\n");
   		error = ErrorJSONFormat;
   		return false;
@@ -234,6 +349,8 @@ bool ExternalData::processGravityReport(char data[],size_t length, bool authenti
 	}else if(name.startsWith("iSpindel")){
 		//{"name": "iSpindel01", "id": "XXXXX-XXXXXX", "temperature": 20.5, "angle": 89.5, "gravityP": 13.6, "battery": 3.87}
 		DBG_PRINTF("%s\n",name.c_str());
+		// force to set to iSpindel.
+		_cfg->gravityDeviceType = GravityDeviceIspindel;
 
 		if(!_ispindelName){
 			_ispindelName=(char*) malloc(name.length()+1);
@@ -244,30 +361,57 @@ bool ExternalData::processGravityReport(char data[],size_t length, bool authenti
 		    DBG_PRINTF("iSpindel report no temperature!\n");
 		    return false;
 		}
-		
+		_lastUpdate=TimeKeeper.getTimeSeconds();
+
         float itemp=root["temperature"];
-		setAuxTemperatureCelsius(itemp);
-
-		//Serial.print("temperature:");
-		//Serial.println(itemp);
-
-		if(!root.containsKey("angle")){
-        	DBG_PRINTF("iSpindel report no angle!\n");
-			return false;
+		float tempC=itemp;
+		if(root.containsKey("temp_units")){
+			const char *TU=root["temp_units"];
+			if(*TU == 'F') tempC = (itemp-32)/1.8;
+			else if(*TU == 'K') tempC = itemp- 273.15;
 		}
-    	
-        setTilt(root["angle"],itemp,TimeKeeper.getTimeSeconds());
+
+		setAuxTemperatureCelsius(tempC);
 
         if(root.containsKey("battery"))
     	    setDeviceVoltage(root["battery"]);
 
-		//setPlato(root["gravityP"],TimeKeeper.getTimeSeconds());
-		if(root.containsKey("gravity") &&
-                ! _cfg->calculateGravity 
-				&& ! _calibrating ){
+        if(root.containsKey("RSSI"))
+    	    setDeviceRssi(root["RSSI"]);
+
+		//Serial.print("temperature:");
+		//Serial.println(itemp);
+
+		if(root.containsKey("angle")){
+			_ispindelTilt=root["angle"];
+			// add tilt anyway
+			brewLogger.addTiltAngle(_ispindelTilt);
+		}
+
+		if(root.containsKey("angle") && (_cfg->calculateGravity ||  _calibrating ) ){
+	        float calculatedSg=calculateGravitybyAngle(_ispindelTilt,itemp);
+
+			// update, gravity data calculated
+			// in "brew N cal" mode, only tilt is logged.
+			setGravity(calculatedSg,_lastUpdate,!_calibrating); // save only when not calibrating.
+			#if TWOFACED_LCD
+			char unit;
+			float max,min;
+
+		    brewPi.getTemperatureSetting(&unit,&min,&max);
+			smartDisplay.gravityDeviceData(calculatedSg,(unit =='C')? tempC:C2F(tempC),_lastUpdate,unit,_cfg->usePlato);
+			#endif
+		}else if(root.containsKey("gravity")){
 			// gravity information directly from iSpindel
 			float sgreading=root["gravity"];
-            setGravity(sgreading, TimeKeeper.getTimeSeconds());
+			if(IsGravityInValidRange(sgreading)) setGravity(sgreading, TimeKeeper.getTimeSeconds());
+
+			#if TWOFACED_LCD
+			char unit;
+			float max,min;
+    		brewPi.getTemperatureSetting(&unit,&min,&max);			
+			smartDisplay.gravityDeviceData(sgreading,(unit =='C')? tempC:C2F(tempC),_lastUpdate,unit,_cfg->usePlato);
+			#endif
         }
 	}else{
 		    error = ErrorUnknownSource;

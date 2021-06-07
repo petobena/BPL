@@ -10,7 +10,9 @@
     </title>
     <meta name="apple-mobile-web-app-title" content="BrewPiLess">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <script type="text/javascript" src="js/vendor/dygraph-combined.js"></script>
+    <script type="text/javascript" src="js/vendor/dygraph.min.js"></script>
+    <script type="text/javascript" src="js/vendor/synchronizer.js"></script>
+
     <script type="text/javascript" src="js/vendor/bwf.js"></script>
     <script type="text/javascript" src="js/vendor/chart.js"></script>
     <script type="text/javascript" src="js/vendor/regression.js"></script>
@@ -18,6 +20,9 @@
     <script type="text/javascript" src="js/shared.js"></script>
     <script type="text/javascript" src="js/capper.js"></script>
     <script type="text/javascript" src="js/script.js"></script>
+
+
+    <link rel="stylesheet" href="js/vendor/dygraph.css">
     <link href="https://fonts.googleapis.com/css?family=Roboto" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
 </head>
@@ -29,6 +34,9 @@
     <div style="display:none">
         <span id="ylabel"><%= chart_temperature %></span>
         <span id="y2label"><%= chart_gravity %></span>
+        <span id="psilabel"><%= chart_pressure %></span>
+        <span id="vollabel"><%= chart_co2vol %></span>
+        <span id="rhlabel"><%= chart_rh %></span>
     </div>
 
     <div viewport layout horizontal>
@@ -44,6 +52,9 @@
                     <li layout horizontal main-justified><span class="descriptor"><%= status_fridgetemp %></span><span id="lcdFridgeTemp"></span></li>
                     <li layout horizontal main-justified><span class="descriptor"><%= status_fridgeset %></span><span id="lcdFridgeSet"></span></li>
                     <li layout horizontal main-justified><span class="descriptor"><%= status_roomtemp %></span><span id="lcdRoomTemp"></span></li>
+                    <li layout horizontal main-justified class="no-display" id="humidity-info"><span class="descriptor"><%= status_humidity %></span><span id="humidity"></span></li>
+                    <li layout horizontal main-justified class="no-display" id="room-humidity-info"><span class="descriptor"><%= room_humidity %></span><span id="room-humidity"></span></li>
+
                 </ul>
             </div>
 
@@ -62,11 +73,23 @@
                 </li>
 
             </ul>
-            <ul class="data-pane ispindle-pane">
-                <li class="heading"><strong><%= ispindel_data %></strong></li>
-                <li layout horizontal main-justified><span class="descriptor"><%= ispindel_tilt %></span> <span id="iSpindel-tilt">--</span></li>
-                <li layout horizontal main-justified><span class="descriptor"><%= ispindel_battery %></span> <span id="iSpindel-battery">--</span></li>
-                <li layout horizontal main-justified><span class="descriptor"><%= ispindel_lastupdate %></span> <span id="iSpindel-last">--</span></li>
+            <ul class="data-pane gravity-device-pane">
+                <li class="heading"><strong><span class="ispindel-info"> <%= ispindel_data %></span><span class="tilt-info">Tilt</span> </strong></li>
+                <li class="ispindel-info" layout horizontal main-justified><span class="descriptor"><%= ispindel_tilt %></span> <span id="iSpindel-tilt">--</span></li>
+                <li class="ispindel-info" layout horizontal main-justified><span class="descriptor"><%= ispindel_battery %></span> <span id="iSpindel-battery">--</span></li>
+
+                <li layout horizontal main-justified><span class="descriptor">Temperature</span> <span id="gravity-device-temp">--</span></li>
+
+                <li layout horizontal main-justified id=ispindel-rssi-line>
+                    <span class="descriptor">RSSI</span> <div id="gravity-device-rssi" class="wifi-bars">
+                        <div class="rssi-bar rssi-bar1"></div>
+                        <div class="rssi-bar rssi-bar2"></div>
+                        <div class="rssi-bar rssi-bar3"></div>
+                        <div class="rssi-bar rssi-bar4"></div>
+                    </div>
+                </li>
+
+                <li layout horizontal main-justified><span class="descriptor"><%= ispindel_lastupdate %></span> <span id="gravity-device-last">--</span></li>
             </ul>
 
             <ul class="data-pane ptc-pane" id="ptc-pane" style="display:none">
@@ -94,13 +117,18 @@
                     </div>
                 </li>
             </ul>
+            <ul class="data-pane" id="pressure-info-pane">
+                <li layout horizontal main-justified><span class="descriptor">Pressure</span><span><span id="pressure-psi"></span> psi</span>
+                </li>
+            </ul>
+
 
             <ul class="data-pane">
                 <li class="heading"><strong><%= system %></strong></li>
                 <li layout horizontal main-justified><span class="descriptor"><%= writing_log %></span><span id="recording"></span></li>
                 <li layout horizontal main-justified>
                     <span class="descriptor"><%= wifi %></span>
-                    <div id="rssi">
+                    <div id="rssi" class="wifi-bars">
                         <div class="rssi-bar rssi-bar1"></div>
                         <div class="rssi-bar rssi-bar2"></div>
                         <div class="rssi-bar rssi-bar3"></div>
@@ -111,7 +139,11 @@
         </div>
         <div main flex>
             <div layout horizontal>
-                <div id="div_g" class="chart"></div>
+                <div class=chart>
+                    <div id=div_g class=chart-main></div>
+                    <div id=div_p class="chart-p pressure-group forced-hidden"></div>
+                    <div id=div_h class="chart-p humidity-group forced-hidden"></div>
+                </div>
                 <ul flex class="chart-legend">
                     <li layout horizontal main-justified class="chart-legend-row time">
                         <span class="beer-chart-legend-time"><%= legend_date %></span>
@@ -157,6 +189,40 @@
                         <label onclick="BChart.toggle(FilteredSgLine)" for="filtersg" class="switch-label"><%= legend_filteredsg %><span class=platounit>&deg;P</span></label>
                         <div class="legend-value">--</div>
                     </li>
+                    <li layout horizontal main-justified class="chart-legend-row pressure pressure-group forced-hidden">
+                        <input type="checkbox" id="pressure" name="set-name" class="switch-input" checked>
+                        <label onclick="BChart.toggle(PressureLine,1)" for="pressure" class="switch-label"><%= legend_pressure %></label>
+                        <div class="legend-value">--</div>
+                    </li>
+
+                    <li layout horizontal main-justified class="chart-legend-row pressure-set pressure-group forced-hidden">
+                        <input type="checkbox" id="pressure-set" name="set-name" class="switch-input" checked>
+                        <label onclick="BChart.toggle(PressureSetLine)" for="pressure-set" class="switch-label"><%= legend_pressure_set %></label>
+                        <div class="legend-value">--</div>
+                    </li>
+
+                    <li layout horizontal main-justified class="chart-legend-row carbonation pressure-group forced-hidden">
+                        <input type="checkbox" id="carbonation" name="set-name" class="switch-input" checked>
+                        <label onclick="BChart.toggle(CarbonationLine)" for="carbonation" class="switch-label"><%= legend_carbonation %></label>
+                        <div class="legend-value">--</div>
+                    </li>
+
+                    <li layout horizontal main-justified class="chart-legend-row humidity humidity-group forced-hidden">
+                        <input type="checkbox" id="humidity" name="set-name" class="switch-input" checked>
+                        <label onclick="BChart.toggle(ChamberHumidityLine)" for="humidity" class="switch-label"> <%= label_humidity %> </label>
+                        <div class="legend-value">--</div>
+                    </li>
+                    <li layout horizontal main-justified class="chart-legend-row set-humidity humidity-group forced-hidden">
+                        <input type="checkbox" id="humidity-set" name="set-name" class="switch-input" checked>
+                        <label onclick="BChart.toggle(SetHumidityLine)" for="humidity-set" class="switch-label"> <%= label_humidity_set %> </label>
+                        <div class="legend-value">--</div>
+                    </li>
+                    <li layout horizontal main-justified class="chart-legend-row room-humidity humidity-group forced-hidden">
+                        <input type="checkbox" id="room-humidity" name="set-name" class="switch-input" checked>
+                        <label onclick="BChart.toggle(RoomHumidityLine)" for="room-humidity" class="switch-label"> <%= label_room_humidity %> </label>
+                        <div class="legend-value">--</div>
+                    </li>
+
                     <li layout horizontal main-justified class="chart-legend-row" id="formula-btn" onclick="openpolynomialpane()">f</li>
                 </ul>
             </div>
@@ -219,8 +285,8 @@
             </ul>
 
             <div class="dialog-buttons">
-                <button onclick="dismissgravity()"><%= dlg_cancel %></button>
-                <button onclick="inputgravity()"><%= dlg_ok %></button>
+                <button class="btn btn--rise" onclick="dismissgravity()"><%= dlg_cancel %></button>
+                <button class="btn btn--rise" onclick="inputgravity()"><%= dlg_ok %></button>
             </div>
         </div>
     </div>
@@ -261,7 +327,7 @@
                                 </tr>
                             </tobdy>
                         </table>
-                        <div style="float:right;"><button onclick="applyIgnoreMask()"><%= control_apply %></button></div>
+                        <div style="float:right;"><button class="btn btn--rise" onclick="applyIgnoreMask()"><%= control_apply %></button></div>
                     </td>
                     <td>
                         <div id="graph"></div>

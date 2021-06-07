@@ -27,7 +27,11 @@
 #include "Brewpi.h"
 #include "TempControl.h"
 
-#if RotaryViaPCF8574 || ButtonViaPCF8574
+#if ESP32
+#include "rom/gpio.h"
+#endif
+
+#if ButtonViaPCF8574
 #include <pcf8574_esp.h>
 #endif
 
@@ -39,7 +43,7 @@ volatile int16_t RotaryEncoder::steps;
 volatile bool RotaryEncoder::pushFlag;
 
 
-#ifndef ESP8266
+#if !defined(ESP8266) && !defined(ESP32)
 #if BREWPI_STATIC_CONFIG!=BREWPI_SHIELD_DIY
 	#if rotarySwitchPin != 7
 		#error Review interrupt vectors when not using pin 7 for menu push
@@ -71,6 +75,8 @@ volatile bool RotaryEncoder::pushFlag;
 
 
 #if BREWPI_BUTTONS || ButtonViaPCF8574
+
+#define BUTTON_INTERRUPT 1
 
 #if ButtonViaPCF8574
 PCF8574 pcf8574(PCF8574_ADDRESS,PIN_SDA, PIN_SCL);
@@ -107,7 +113,6 @@ static uint8_t _buttonPressed;
 #define btnIsDownContinuousPressed (_buttonPressed == (ButtonDownMask<<4))
 
 
-
 static void btnInit(void){
 	_testButtunStatus=0;
 	_buttonChangeTime=0;
@@ -123,6 +128,159 @@ static void btnInit(void){
 #define BtnDebugPrintf(...)  
 #endif
 
+#if BUTTON_INTERRUPT
+// avoid using digitalRead, supposedly quicker.
+static unsigned char buttonStatus=0;
+
+ICACHE_RAM_ATTR static boolean btnDetect(void)
+{
+	uint32_t currentTimeInMS=millis();
+
+	if(buttonStatus==0)
+	{
+		if(_testButtunStatus ==0) return false;
+
+		unsigned long duration=currentTimeInMS - _buttonChangeTime;
+
+    	BtnDebugPrintf("pressed:%d,%d for %ld\n",_testButtunStatus,buttonStatus,duration);
+
+		if(duration > ButtonPressedDetectMinTime)
+		{
+			if(duration > ButtonLongPressedDetectMinTime) _longPressed=true;
+			else _longPressed =false;
+			_buttonPressed = _testButtunStatus;
+
+			_testButtunStatus =0;
+			_continuousPressedDetected = false;
+
+			BtnDebugPrintf("presse %d long?%d\n",_buttonPressed,_longPressed);
+
+			return true;
+		}
+
+    	BtnDebugPrintf("Not Pressed");
+
+		_testButtunStatus =0;
+		_continuousPressedDetected = false;
+
+		return false;
+	}
+
+	// current button status is not ZERO
+	if(buttonStatus == _testButtunStatus) // pressing persists
+	{
+		if(_continuousPressedDetected )
+		{
+			//if duration exceeds a trigger point
+			if( (currentTimeInMS - _continuousPressedDectedTime) > ButtonContinuousPressedTrigerTime)
+			{
+				_continuousPressedDectedTime=currentTimeInMS;
+
+				BtnDebugPrintf("con-pre:%d @%ld\n",_buttonPressed,currentTimeInMS);
+
+				return true;
+			}
+		}
+		else
+		{
+			unsigned long duration=currentTimeInMS - _buttonChangeTime;
+
+			if(duration > ButtonContinuousPressedDetectMinTime)
+			{
+				_continuousPressedDetected=true;
+				_continuousPressedDectedTime=currentTimeInMS;
+				// fir the first event
+				_buttonPressed = buttonStatus << 4; // user upper 4bits for long pressed
+
+				BtnDebugPrintf("Continue:%d start %ld\n",_buttonPressed,currentTimeInMS);
+
+				return true;
+			}
+		}
+	}
+	else // if(buttonStatus == _testButtunStatus)
+	{
+		// for TWO buttons event, it is very hard to press and depress
+		// two buttons at exactly the same time.
+		// so if new status is contains in OLD status.
+		// it might be the short period when two fingers are leaving, but one is detected
+		// first before the other
+		// the case might be like  01/10 -> 11 -> 01/10
+		//  just handle the depressing case: 11-> 01/10
+		if((_testButtunStatus & buttonStatus)
+			&&  (_testButtunStatus > buttonStatus))
+		{
+			if(_oneFigerUp ==0)
+			{
+				_oneFigerUp = currentTimeInMS;
+				// skip this time
+				return false;
+			}
+			else
+			{
+				// one fat finger is dected
+				if( (currentTimeInMS -_oneFigerUp) < ButtonFatFingerTolerance)
+				{
+					return false;
+				}
+			}
+
+	    	BtnDebugPrintf("Failed fatfinger\n");
+
+		}
+		// first detect, note time to check if presist for a duration.
+		_testButtunStatus = buttonStatus;
+		_buttonChangeTime = currentTimeInMS;
+		_oneFigerUp = 0;
+
+		BtnDebugPrintf("Attempt:%d\n",buttonStatus);
+	}
+
+	return false;
+}
+static bool _buttonStatusChanged=false;
+
+ICACHE_RAM_ATTR static void processbuttons(){
+	if(btnDetect()){
+		_buttonStatusChanged = true;
+	}
+}
+ICACHE_RAM_ATTR static void isr_upChanged(void) {
+	if (digitalRead(UpButtonPin) == 0){
+		buttonStatus |= ButtonUpMask;
+	}else{
+		buttonStatus &= 0xFF ^ ButtonUpMask;
+	}
+	processbuttons();
+}
+
+ICACHE_RAM_ATTR static void isr_downChanged(void) {
+	if (digitalRead(DownButtonPin) == 0){
+		buttonStatus |= ButtonDownMask;
+	}else{
+		buttonStatus &= 0xFF ^ ButtonDownMask;
+	}
+	processbuttons();
+}
+
+static boolean btnReadButtons(void){
+	processbuttons(); // to process continuous pressing
+
+	//noInterrupts();
+	if(_buttonStatusChanged){
+		//  Interrupt happens just before read and write.
+		//  that would result in loss of button pressed event.
+		//  however, disable/enable interrupt seems to make the system unstable.
+		// it's better to lose information instead of instaibliity.
+		_buttonStatusChanged = false;
+		//interrupts();
+		return true;
+	}
+	//interrupts();
+	return false;
+}
+
+#else //#if BUTTON_INTERRUPT
 static boolean btnReadButtons(void)
 {
 	uint32_t currentTimeInMS=millis();
@@ -253,14 +411,26 @@ static boolean btnReadButtons(void)
 	return false;
 }
 
+#endif //#if BUTTON_INTERRUPT
+
+
 void RotaryEncoder::init(void){
 
 #if ButtonViaPCF8574
 
 #else
+
+
+
 // BREWPI_BUTTONS
 	pinMode(UpButtonPin, INPUT_PULLUP);
 	pinMode(DownButtonPin, INPUT_PULLUP);
+
+#if BUTTON_INTERRUPT
+	attachInterrupt(UpButtonPin, isr_upChanged, CHANGE);
+	attachInterrupt(DownButtonPin, isr_downChanged, CHANGE);
+#endif
+
 #endif
 
 	btnInit();
@@ -284,15 +454,20 @@ void RotaryEncoder::process(void){
 		display.resetBacklightTimer();
 
 		if(btnIsSetPressed){
+			DBG_PRINTF("SET\n");
 			setPushed();
 		}else if(btnIsUpPressed){
+			DBG_PRINTF("UP\n");
 			if(steps < maximum) steps++;
 		}else if(btnIsDownPressed){
+			DBG_PRINTF("DOWN\n");
 			if(steps > minimum)  steps--;
 		}else if(btnIsUpContinuousPressed){
+			DBG_PRINTF("UP+\n");
 			steps+=2;
 			if(steps > maximum) steps = maximum;
 		}else if(btnIsDownContinuousPressed){
+			DBG_PRINTF("DOWN+\n");
 			steps-=2;
 			if(steps < minimum) steps = minimum;
 		}
@@ -402,7 +577,12 @@ int16_t RotaryEncoder::read(void){
 #define HS_R_START_M 0x3
 #define HS_R_CW_BEGIN_M 0x4
 #define HS_R_CCW_BEGIN_M 0x5
+#if  ESP32
+// this table is accessed in ISR, needed to stay in RAM
+uint8_t hs_ttable[7][4] = {
+#else
 const uint8_t PROGMEM hs_ttable[7][4] = {
+#endif
 	// R_START (00)
 	{HS_R_START_M,            HS_R_CW_BEGIN,     HS_R_CCW_BEGIN,  R_START},
 	// HS_R_CCW_BEGIN
@@ -425,8 +605,12 @@ const uint8_t PROGMEM hs_ttable[7][4] = {
 #define R_CCW_BEGIN 0x4
 #define R_CCW_FINAL 0x5
 #define R_CCW_NEXT 0x6
-
+#if  ESP32
+// this table is accessed in ISR, needed to stay in RAM
+uint8_t ttable[7][4] = {
+#else
 const uint8_t PROGMEM ttable[7][4] = {
+#endif
 	// R_START
 	{R_START,    R_CW_BEGIN,  R_CCW_BEGIN, R_START},
 	// R_CW_FINAL
@@ -446,24 +630,30 @@ const uint8_t PROGMEM ttable[7][4] = {
 #if BREWPI_ROTARY_ENCODER
 
 #ifdef ESP8266
+#error "ESP8266 doesn't support Rotary encoder"
+#endif
 
-#ifdef RotaryViaPCF8574
+#ifdef ESP32
 
-PCF8574 pcf8574(PCF8574_ADDRESS,PIN_SDA, PIN_SCL);
+#define GPIO_READ(pin) (((pin)>31)? (gpio_input_get_high() & (1<<(pin-32))):(gpio_input_get() & (1<<pin)))
 
-static void isr_iochange(void) {
-	rotaryEncoder.process();
+static void IRAM_ATTR isr_rotary(void) { 
+	rotaryEncoder.process(); 
 }
 
-#else //#ifdef RotaryViaPCF8574
-static void isr_rotary(void) { rotaryEncoder.process(); }
-static void isr_push(void) {
-	if(! digitalRead(rotarySwitchPin))
+#define MINIMUM_PUSH_GAP 200000
+
+static void IRAM_ATTR isr_push(void) {
+	// using software debouncing.
+	static uint32_t pushed_time=0;
+	uint32_t now= micros();
+	if(! GPIO_READ(rotarySwitchPin) && (now - pushed_time) > MINIMUM_PUSH_GAP ){
+		pushed_time = now;
 		rotaryEncoder.setPushed();
+	}
 }
-#endif //#ifdef RotaryViaPCF8574
 
-#else //#ifdef ESP8266
+#else //#ifdef ESP32
 #include "util/atomic.h"
 #include "FastDigitalPin.h"
 
@@ -501,29 +691,21 @@ ISR(PCINT0_vect){
 #endif //#ifdef ESP8266
 
 
-void RotaryEncoder::process(void){
+void IRAM_ATTR RotaryEncoder::process(void){
+
 	static uint8_t state=R_START;
 	// Grab state of input pins.
 
-	#ifdef ESP8266
+	#if ESP32
+	/* uint8_t currPinA = !digitalRead(rotaryAPin);
+	 uint8_t currPinB = !digitalRead(rotaryBPin); */
 
-	#ifdef RotaryViaPCF8574
+//	uint32_t input=gpio_input_get();
 
-	uint8_t p=pcf8574.read8();
-	// push
-	if  ((p & ( 1<<rotarySwitchPin))  == 0){
-		rotaryEncoder.setPushed();
-		return;
-	}
+	uint8_t currPinA = ! GPIO_READ(rotaryAPin);
+	uint8_t currPinB = ! GPIO_READ(rotaryBPin);
 
-	uint8_t currPinA = (p & ( 1<<rotaryAPin)) >> rotaryAPin ;
-	uint8_t currPinB = (p & ( 1<<rotaryBPin)) >> rotaryBPin;
-
-	#else //#ifdef RotaryViaPCF8574
-	uint8_t currPinA = ! digitalRead(rotaryAPin);
-	uint8_t currPinB = ! digitalRead(rotaryBPin);
-	#endif //#ifdef RotaryViaPCF8574
-	#else // #ifdef ESP8266
+	#else // #ifdef ESP32
 	#if BREWPI_STATIC_CONFIG == BREWPI_SHIELD_DIY
 	uint8_t currPinA = !bitRead(PIND,2);
 	uint8_t currPinB = !bitRead(PIND,3);
@@ -534,16 +716,24 @@ void RotaryEncoder::process(void){
 	uint8_t currPinA = !bitRead(PINB,0);
 	uint8_t currPinB = !bitRead(PINB,1);
 	#endif
-	#endif //#ifdef ESP8266
+	#endif //#ifdef ESP32
 
 	unsigned char pinstate = (currPinB << 1) | currPinA;
 
 	// Determine new state from the pins and state table.
 	if(tempControl.cc.rotaryHalfSteps){
+		#if ESP32
+		state = hs_ttable[state & 0xf][pinstate];
+		#else
 		state = pgm_read_byte(&(hs_ttable[state & 0xf][pinstate]));
+		#endif
 	}
 	else{
+		#if ESP32
+		state = ttable[state & 0xf][pinstate];
+		#else
 		state = pgm_read_byte(&(ttable[state & 0xf][pinstate]));
+		#endif
 	}
 
 	// Get emit bits, ie the generated event.
@@ -558,40 +748,35 @@ void RotaryEncoder::process(void){
 		else if (s < minimum)
 			s = maximum;
 		steps = s;
-		display.resetBacklightTimer();
+		// this goes too deep, and needed to put in ICACHE display.resetBacklightTimer();
 	}
 }
 #endif  // BREWPI_ROTARY_ENCODER
 
-void RotaryEncoder::setPushed(void){
+#if ESP8266
+#define IRAM_ATTR 
+#endif
+
+void IRAM_ATTR RotaryEncoder::setPushed(void){
 	pushFlag = true;
-	display.resetBacklightTimer();
+	
+	// this goes too deep, and needed to put in ICACHE, also it is processed in outer loop 
+	//display.resetBacklightTimer();
 }
 
+#define BREWPI_INPUT_PULLUP (USE_INTERNAL_PULL_UP_RESISTORS ? INPUT_PULLUP : INPUT)
 
 void RotaryEncoder::init(void){
 #if BREWPI_ROTARY_ENCODER
 
-#ifdef ESP8266
-	#define BREWPI_INPUT_PULLUP (USE_INTERNAL_PULL_UP_RESISTORS ? INPUT_PULLUP : INPUT)
-
-#ifdef RotaryViaPCF8574
-
-	pinMode(PCF8574_INT, INPUT_PULLUP);
-	attachInterrupt(PCF8574_INT, isr_iochange, FALLING);
-
-#else //#ifdef RotaryViaPCF8574
-	pinMode(rotaryAPin, INPUT_PULLUP);
-	pinMode(rotaryBPin, INPUT_PULLUP);
-	pinMode(rotarySwitchPin, INPUT_PULLUP);
-
-
+#if ESP32
+	fastPinMode(rotaryAPin, BREWPI_INPUT_PULLUP);
+	fastPinMode(rotaryBPin, BREWPI_INPUT_PULLUP);
+	fastPinMode(rotarySwitchPin, BREWPI_INPUT_PULLUP);
 	attachInterrupt(rotaryAPin, isr_rotary, CHANGE);
 	attachInterrupt(rotaryBPin, isr_rotary, CHANGE);
-	attachInterrupt(rotarySwitchPin, isr_push, CHANGE);
-#endif
-
-#else //#ifdef ESP8266
+	attachInterrupt(rotarySwitchPin, isr_push, FALLING);
+#else //#ifdef ESP32
 	#define BREWPI_INPUT_PULLUP (USE_INTERNAL_PULL_UP_RESISTORS ? INPUT_PULLUP : INPUT)
 	fastPinMode(rotaryAPin, BREWPI_INPUT_PULLUP);
 	fastPinMode(rotaryBPin, BREWPI_INPUT_PULLUP);
@@ -617,7 +802,7 @@ void RotaryEncoder::init(void){
 		// enable mask bit for PCINT23
 		PCMSK2 |= (1<<PCINT23);
 	#endif
-#endif // #ifdef ESP8266
+#endif // #ifdef ESP32
 #endif	//#if BREWPI_ROTARY_ENCODER
 
 }
@@ -625,7 +810,7 @@ void RotaryEncoder::init(void){
 
 void RotaryEncoder::setRange(int16_t start, int16_t minVal, int16_t maxVal){
 #if BREWPI_ROTARY_ENCODER
-#ifdef ESP8266
+#ifdef ESP32
 	noInterrupts();
 #else
 	ATOMIC_BLOCK(ATOMIC_RESTORESTATE){
@@ -635,7 +820,7 @@ void RotaryEncoder::setRange(int16_t start, int16_t minVal, int16_t maxVal){
 		steps = start;
 		minimum = minVal;
 		maximum = maxVal; // +1 to make sure that one step is still two half steps at overflow
-#ifdef ESP8266
+#ifdef ESP32
 	interrupts();
 #else
 	}
@@ -659,7 +844,7 @@ bool RotaryEncoder::changed(void){
 
 int16_t RotaryEncoder::read(void){
 #if BREWPI_ROTARY_ENCODER
-#ifdef ESP8266
+#ifdef ESP32
 	return steps;
 #else
 	ATOMIC_BLOCK(ATOMIC_RESTORESTATE){

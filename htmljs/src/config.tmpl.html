@@ -39,6 +39,17 @@
                     </div>
                     <div layout horizontal cross-center>
                         <h6 class="inline-header">
+                            <%= config_lcd_display %>
+                        </h6>
+                        <select id="display" name="dis" class="nb">
+                            <option value=0><%= config_lcd_rotate %></option>
+                            <option value=1><%= config_lcd_brewpi %></option>
+                            <option value=2><%= config_lcd_additional %></option>
+                        </select>
+                    </div>
+
+                    <div layout horizontal cross-center>
+                        <h6 class="inline-header">
                             <%= config_title %>
                         </h6>
                         <input name="title" type="text" size="12" maxlength="24">
@@ -89,13 +100,17 @@
                         <h6 class="inline-header">
                             <%= config_network %>
                         </h6>
-                        <button id="connnected-ssid" class="btn" onclick="Net.show();return false;">...</button>
+                        <button id="connnected-ssid" class="btn btn--raised" onclick="Net.show();return false;">...</button>
                     </div>
                     <div layout horizontal cross-center>
                         <h6 class="inline-header">
                             <%= config_ip %>
                         </h6>
                         <span id="sta-ip"></span>
+                    </div>
+
+                    <div layout horizontal cross-center>
+                        <button class="btn btn--raised" onclick="showsysinfo(); return false;">Sysinfo</button>
                     </div>
 
                     <div class="card-footer">
@@ -127,8 +142,9 @@
                 <input id="nwpass" name="nwpass" length="64" type="password" placeholder="password"><br><br>
                 <input id="staticip" name="ip" length="1" placeholder="<%= config_fixedip %>" class="nb iptype"><br>
                 <input id="gateway" name="gw" length="1" placeholder="<%= config_gateway %>" class="nb iptype"><br>
-                <input id="netmask" name="mask" length="1" placeholder="<%= config_netmask %>" class="nb iptype"><br><br>
-                <button type="button" onclick="return Net.save()"><%= config_save_change %></button>
+                <input id="netmask" name="mask" length="1" placeholder="<%= config_netmask %>" class="nb iptype"><br>
+                <input id="dns" name="dns" length="1" placeholder="<%= config_dns %>" class="nb iptype"><br><br>
+                <button type="button" onclick="return savewifi()"><%= config_save_change %></button>
                 <button onclick="Net.hide();return false;"><%= dlg_cancel %></button>
             </form>
         </div>
@@ -142,6 +158,23 @@
             <%= config_wait_restart %>
         </div>
     </div>
+
+    <li id="sysinfo" class="modal">
+        <div class="modal-content" style="width:320px">
+            <ul>
+                <li layout horizontal main-justified>
+                    <h6 class="inline-header"><strong>System Information</strong></h6></li>
+                <li layout horizontal main-justified><span class="descriptor">MAC Address</span>    <span id="mac-address"></span></li>
+                <li layout horizontal main-justified><span class="descriptor">Flash Chip ID</span>  <span id="flash-id"></span></li>
+                <li layout horizontal main-justified><span class="descriptor">Real Flash Size</span>    <span id="real-flash-size"></span></li>
+                <li layout horizontal main-justified><span class="descriptor">Specified Flash Size</span>   <span id="specified-flash-size"></span></li>
+                <li layout horizontal main-justified><span class="descriptor">File System Size</span>   <span id="fs-size"></span></li>
+            </ul>
+            <button onclick="hidesysinfo();return false;">Done</button>
+
+        </div>
+    </div>
+
 
 </body>
 

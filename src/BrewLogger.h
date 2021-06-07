@@ -1,8 +1,20 @@
 #ifndef BrewLogger_H
 #define BrewLogger_H
 #include <FS.h>
+
+#if defined(ESP32)
+#if UseLittleFS
+#include <LittleFS.h>
+#else
+#include <SPIFFS.h>
+#endif
+#endif
+extern FS& FileSystem;
+
 #include "BPLSettings.h"
 #include "TimeKeeper.h"
+
+#define LOG_VERSION 0x6
 
 #define INVALID_RECOVERY_TIME 0xFF
 #define INVALID_TEMPERATURE -250
@@ -11,10 +23,7 @@
 #define LOG_PATH "/log"
 
 #define LogBufferSize 1024
-
 // Log tags
-#define StartLogTag 0xFF
-#define ResumeBrewTag 0xFE
 
 #define PeriodTag 0xF0
 #define StateTag 0xF1
@@ -22,15 +31,32 @@
 #define CorrectionTempTag 0xF3
 #define ModeTag 0xF4
 
+#define TargetPsiTag 0xF5
+#define TimeSyncTag 0xF6
+
 #define FillTag 0xF7
 #define OriginGravityTag 0xF8
 #define CalibrationPointTag 0xF9
 #define IgnoredCalPointMaskTag 0xFA
 
+#define SpecificGravityTag 0xFB
+
+#define HumidityTag 0xFC
+#define HumiditySetTag 0xFD
+
+#define ResumeBrewTag 0xFE
+#define StartLogTag 0xFF
+
 
 #define INVALID_TEMP_INT 0x7FFF
 #define INVALID_GRAVITY_INT 0x7FFF
-#define VolatileHeaderSize 28
+
+#define VolatileDataHeaderSize 7
+#if EnableHumidityControlSupport
+#define VolatileHeaderSize ( VolatileDataHeaderSize*2 + 18)
+#else
+#define VolatileHeaderSize ( VolatileDataHeaderSize*2 + 16)
+#endif
 
 #define OrderBeerSet 0
 #define OrderBeerTemp 1
@@ -38,14 +64,16 @@
 #define OrderFridgeSet 3
 #define OrderRoomTemp 4
 #define OrderExtTemp 5
-#define OrderGravity 6
+//#define OrderGravity 6
+//#define OrderTiltAngle 7
+// use one for Graviyt or Tilt only.
+// when in calibrating, record only Tilt
+// else record gravity only
+#define OrderGravityInfo  6
+#define OrderPressure 7
 
-#define NumberDataBitMask 7
-
-#undef NumberDataBitMask
 #define NumberDataBitMask 8
 
-#define OrderTiltAngle 7
 #define TiltEncode(g) (uint16_t)(100.0 * (g) + 0.5)
 #define INVALID_TILT_ANGLE 0x7FFF
 
@@ -58,7 +86,10 @@
 #define LowOctect(a) (uint8_t)((a)&0xFF)
 
 
-extern BrewPiProxy brewPi;
+#define INVALID_PRESSURE_INT 0x7FFF
+#define PressureEncode(p) (((p)>125 || (p)<-50)? INVALID_PRESSURE_INT:(int16_t)(10.0 * ((p) + 100 )+ 0.5))
+#define PressureDecode(p) (float)(p)/10.0
+
 
 class BrewLogger
 {
@@ -97,12 +128,14 @@ public:
 	void addTiltInWater(float tilt,float reading);
 	bool isCalibrating(void){ return _calibrating;}
 	void addIgnoredCalPointMask(uint32_t mask);
-
+	//format file system
+	void onFormatFS(void);
 private:
 	size_t _fsspace;
-	uint32_t  _tempLogPeriod;
+	uint32_t  _chartTime;
 	uint32_t _lastTempLog;
     uint32_t _resumeLastLogTime;
+	uint32_t _trackedTime;
 
 	bool _recording;
 	bool _calibrating;
@@ -125,6 +158,8 @@ private:
 	uint16_t  _extOriginGravity;
 	uint16_t  _extTileAngle;
 
+	int16_t  _lastPressureReading;
+
 	// for circular buffer
 	int _logHead;
 	uint32_t _headTime;
@@ -132,31 +167,52 @@ private:
 	bool _sendHeader;
 	uint32_t _sendOffset;
 	FileIndexes *_pFileInfo;
+	uint8_t _targetPsi;
 
-	#define VolatileDataHeaderSize 7
+#if EnableHumidityControlSupport	
+	uint8_t _lastHumidity;
+	uint8_t _savedHumidityValue;
+	uint8_t _lastRoomHumidity;
+	uint8_t _savedRoomHumidityValue;
+
+	uint8_t _lastHumidityTarget;
+	uint8_t _savedHumidityTarget;
+#endif
+
 	uint16_t  _headData[VolatileDataHeaderSize];
 
-	void resetTempData(void);
-	void checkspace(void);
+	void _resetTempData(void);
+	void _checkspace(void);
 
-	void volatileHeader(char *buf);
+	void _volatileHeader(char *buf);
 
-	void startLog(bool fahrenheit,bool calibrating);
-	void startVolatileLog(void);
-	int freeBufferSpace(void);
-	void dropData(void);
-	int volatileLoggingAlloc(int size);
-	int allocByte(byte size);
-	void writeBuffer(int idx,uint8_t data);
-	void commitData(int idx,int len);
-	void addOG(uint16_t og);
-	void addMode(char mode);
-	void addState(char state);
-	uint16_t convertTemperature(float temp);
-	void addResumeTag(void);
+	void _startLog(bool fahrenheit,bool calibrating);
+	void _startVolatileLog(void);
+	int _availableBufferSpace(void);
+	void _dropData(void);
+	int _volatileLoggingAlloc(int size);
+	int _allocByte(byte size);
+	void _writeBuffer(int idx,uint8_t data);
+	void _commitData(int idx,int len);
+	void _addOgRecord(uint16_t og);
+	void _addSgRecord(uint16_t sg);
+	void _addGravityRecord(bool isOg, uint16_t gravity);
+#if EnableHumidityControlSupport	
+	void _addHumidityRecord(uint8_t humidity);
+	void _addRoomHumidityRecord(uint8_t humidity);
 
-	void loadIdxFile(void);
-	void saveIdxFile(void);
+	void _addHumidityTargetRecord(uint8_t target);
+#endif
+
+	void _addModeRecord(char mode);
+	uint32_t _addResumeTag(void);
+	void _addTimeSyncTag(void);
+	void _addStateRecord(char state);
+	uint16_t _convertTemperature(float temp);
+	void _addTargetPsiRecord(void);
+
+	void _loadIdxFile(void);
+	void _saveIdxFile(void);
 };
 
 extern BrewLogger brewLogger;

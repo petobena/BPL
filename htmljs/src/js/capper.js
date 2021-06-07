@@ -38,6 +38,16 @@ function TabPane(modes) {
 }
 
 var Capper = {
+    target_psi: 0,
+    psi_valid: false,
+    hidepset: function(hide) {
+        this.psi_valid = !hide;
+        Q(".psi-set-group").style.display = hide ? "none" : "block";        
+    },
+    setpsi: function(psi) {
+        this.target_psi = psi;
+        Q("#cappressure").value = psi;        
+    },
     init: function() {
         var t = this;
         // three conditions:
@@ -57,7 +67,6 @@ var Capper = {
             cf.style.display = "none";
             t.initCtrl();
         }
-
     },
     initCtrl: function() {
         var t = this;
@@ -74,22 +83,29 @@ var Capper = {
             }
         };
         Q("#cap-apply").onclick = function() {
+            // get psi when needed
+            var psiarg = t.psi_valid ? "psi=" + t.target_psi + "&" : "";
+
             var mode = t.tabs.cmode;
             if (mode == "tab-gravity") {
                 var sg = Q("#capgravityinput").value;
                 /*if (isNaN(sg) || sg > 2 || sg < 0.8) alert("<%= capper_invalid_gravity %>");
                 else*/
-                t.send("sg=" + sg);
+                t.send(psiarg + "sg=" + sg);
             } else if (mode == "tab-time") {
                 var time = new Date(Q("#captimeinput").value);
                 if (isNaN(time.getTime())) {
                     alert("<%= capper_invalid_time %>");
                     return;
-                } else t.send("at=" + (time.getTime() / 1000));
+                } else t.send(psiarg + "at=" + (time.getTime() / 1000));
             } else {
-                if (Q("#capswitch").checked) t.send("cap=1");
-                else t.send("cap=0");
+                if (Q("#capswitch").checked) t.send(psiarg + "cap=1");
+                else t.send(psiarg + "cap=0");
             }
+        };
+        t.hidepset(true);
+        Q("#cappressure").onchange = function() {
+                t.target_psi=this.value;
         };
     },
     send: function(arg) {
@@ -168,6 +184,33 @@ var Capper = {
             // check mode
             if (capst.m == 1) Q("#capswitch").checked = false;
             else if (capst.m == 2) Q("#capswitch").checked = true;
+            // pressure control mode
+            if (capst.pm == 2) {
+                this.hidepset(false);
+                this.setpsi(capst.psi);
+            }
         }
+    },
+    tunit:'C',
+    calpsi:function(){
+        if(typeof BrewPiSetting !="undefined")
+            this.tunit=BrewPiSetting.tempUnit;
+
+        Q("#dlg_carbonation").style.display="block";
+    },
+    calCancel:function(){
+        Q("#dlg_carbonation").style.display="none";
+    },
+    calOk:function(){
+        var p=Q("#carcal-psi").innerHTML;
+        if(!isNaN(p)) this.setpsi(p);
+        Q("#dlg_carbonation").style.display="none";
+    },
+    cal:function(){
+        var V=Q("#carcal-vol").value;
+        var T = Q("#carcal-temp").value;
+        if(this.tunit == 'C') T = C2F(T);
+        var P = -16.6999 - 0.0101059 * T + 0.00116512 * T * T + 0.173354 * T * V + 4.24267 *V - 0.0684226 *V * V;
+        Q("#carcal-psi").innerHTML=Math.round(P);
     }
 };

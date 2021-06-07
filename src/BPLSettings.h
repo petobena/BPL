@@ -2,6 +2,7 @@
 #define BPLSettings_H
 #include <FS.h>
 #include <time.h>
+#include "Config.h"
 //*****************************************************
 // 156 bytes
 typedef struct _SystemConfiguration{
@@ -16,7 +17,9 @@ typedef struct _SystemConfiguration{
     uint16_t  port;
     uint8_t passwordLcd;
     uint8_t wifiMode;
-    uint8_t _padding[8];
+    uint32_t dns;
+    uint8_t  displayMode;
+    uint8_t _padding[3];
 }SystemConfiguration;
 
 //*****************************************************
@@ -31,27 +34,47 @@ typedef struct _TimeInformation{
 //*****************************************************
 // gravity device
 //  36
+#define GravityDeviceNone 0
+#define GravityDeviceIspindel 1
+#define GravityDeviceTilt 2
+
 typedef struct _GravityDeviceConfiguration{
     float ispindelCoefficients[4];
     float   lpfBeta;
 	uint32_t  numberCalPoints;
     
-    uint8_t  ispindelEnable;
+    uint8_t  gravityDeviceType;
     uint8_t  ispindelTempCal;
     uint8_t  calculateGravity;
     uint8_t  ispindelCalibrationBaseTemp;
 
 	uint8_t  stableThreshold;
 	uint8_t  usePlato;
-    uint8_t _padding[6];
+    uint8_t  _padding[6];
 }GravityDeviceConfiguration;
 
+
+#if SupportTiltHydrometer
+typedef  struct _TiltCalibrationPoint{
+        uint16_t rawsg;
+        uint16_t calsg;
+} TiltCalibrationPoint;
+
+typedef struct _TiltConfiguratoin{
+    float coefficients[4];
+    TiltCalibrationPoint  calibrationPoints[6];
+    uint8_t  numCalPoints;
+    uint8_t  tiltColor;
+    uint8_t  _padding[10];
+} TiltConfiguration;
+
+#endif
 //*****************************************************
 // Beer Profile
 
 // 
 #define InvalidStableThreshold 0xFF
-#define MaximumSteps 7
+#define MaximumSteps 10
 // datys are encoded by *100
 #define ScheduleDayFromJson(d)  ((uint16_t) ((d) * 100.0))
 #define ScheduleDayToJson(d)  ((float)(d)/100.0)
@@ -176,20 +199,33 @@ typedef struct _ParasiteTempControlSettings{
 // so additional buffer is neede to decode.
 // So let's store the strings in  a compact way 
 #if SupportMqttRemoteControl
+
+#define MqttModeOff 0
+#define MqttModeControl 1
+#define MqttModeLogging 2
+#define MqttModeBothControlLoggging 3
+
+#define MqttReportIndividual 0
+#define MqttReportJson 1
+
 #define MqttSettingStringSpace 320
 typedef struct _MqttRemoteControlSettings{
     uint16_t port;
-    uint8_t  enabled;
-    uint8_t  _padding1;
+    uint8_t  mode;
+    uint8_t  reportFormat;
 
     uint16_t  serverOffset;
     uint16_t  usernameOffset;
     uint16_t  passwordOffset;
     uint16_t  modePathOffset;
-    uint16_t  settingTempPathOffset;
+    uint16_t  beerSetPathOffset;
     uint16_t  capControlPathOffset;
     uint16_t  ptcPathOffset;
-    uint8_t   _padding2[8];
+    uint16_t  fridgeSetPathOffset;
+
+    uint16_t  reportBasePathOffset;
+    uint16_t  reportPeriod;
+    uint8_t   _padding2[2];
 
     uint8_t   _strings[MqttSettingStringSpace];
 }MqttRemoteControlSettings;
@@ -202,14 +238,53 @@ typedef struct _MqttRemoteControlSettings{
 #define PMModeMonitor 1
 #define PMModeControl 2
 
+#define TransducerADC_Internal 0
+#define TransducerADC_ADS1115 1
+
 typedef struct _PressureMonitorSettings{
     float fa;
-    uint16_t fb;
+    int16_t fb;
     uint8_t mode;
     uint8_t psi;
-    uint8_t _padding[9];
+    uint8_t adc_type;
+    uint8_t adc_gain;
+    uint8_t _padding[7];
 }PressureMonitorSettings;
 #endif
+
+#ifdef SaveWiFiConfiguration
+typedef struct _WiFiConfiguration{
+    char ssid[33];
+    char pass[33];
+    char _padding[30];
+} WiFiConfiguration;
+#endif
+
+//####################################################
+/* HumidityControl */
+// 28 bytes
+
+typedef struct _HumidityControlSettings{
+    uint8_t  mode;
+    uint8_t  target;
+    uint8_t  idleLow;
+    uint8_t  idleHigh;
+    uint8_t  humidifyingTargetHigh;
+    uint8_t  dehumidifyingTargetLow;
+    uint8_t  _reserved0;
+    uint8_t  _reserved1;
+
+    uint16_t minHumidifyingIdleTime;
+    uint16_t minHumidifyingRunningTime;
+    uint16_t minDehumidifyingIdleTime;
+    uint16_t minDehumidifyingRunningTime;
+    uint16_t minDeadTime;
+    uint8_t  _reserved2;
+    uint8_t  _reserved3;
+
+    uint8_t  _reserved4[8];
+} HumidityControlSettings;
+
 
 //####################################################
 // whole structure
@@ -230,7 +305,17 @@ struct Settings{
 #if SupportMqttRemoteControl
     MqttRemoteControlSettings mqttRemoteControlSettings;
 #endif
+#ifdef SaveWiFiConfiguration
+    WiFiConfiguration wifiConfiguration;
+#endif
+#if SupportTiltHydrometer
+    TiltConfiguration tiltConfiguration;
+#endif
+#if EnableHumidityControlSupport
+    HumidityControlSettings humidityControl;
+#endif
 };
+
 
 class BPLSettings
 {
@@ -270,6 +355,9 @@ public:
     bool dejsonParasiteTempControlSettings(String json);
     String jsonParasiteTempControlSettings(bool enabled);
 
+    void preFormat(void);
+    void postFormat(void);
+    
 #if SupportPressureTransducer
     //pressure monitor
     PressureMonitorSettings *pressureMonitorSettings(){return &_data.pressureMonitorSettings;}
@@ -282,6 +370,26 @@ public:
     bool dejsonMqttRemoteControlSettings(String json);
     String jsonMqttRemoteControlSettings(void);
 #endif
+
+#ifdef SaveWiFiConfiguration
+    WiFiConfiguration *getWifiConfiguration(void){ return &_data.wifiConfiguration;}
+    void setWiFiConfiguration(const char* ssid,const char* pass){
+        if(ssid) strcpy(_data.wifiConfiguration.ssid,ssid);
+        else _data.wifiConfiguration.ssid[0]='\0';
+        if(pass) strcpy(_data.wifiConfiguration.pass,pass);
+        else _data.wifiConfiguration.pass[0]='\0';
+    }
+#endif
+
+#if SupportTiltHydrometer
+    TiltConfiguration* tiltConfiguration(void){ return & _data.tiltConfiguration;}
+#endif
+
+
+#if EnableHumidityControlSupport
+    HumidityControlSettings* humidityControlSettings(void){ return & _data.humidityControl;}
+#endif
+
 protected:
     Settings _data;
 
@@ -297,6 +405,27 @@ protected:
 #if EanbleParasiteTempControl   
     void defaultParasiteTempControlSettings(void);
 #endif
+#if EnableHumidityControlSupport
+    void defaultHumidityControlSettings(void);
+#endif
+    void defaultMqttSetting(void);
+
+    bool systemConfigurationSanity(void);
+    bool timeInformationSanity(void);
+    bool gravityConfigSantiy(void);
+    bool beerProfileSanity(void);
+    bool logFileIndexesSanity(void);
+    bool remoteLoggingSanity(void);
+    bool autoCapSettingsSanity(void);
+#if EanbleParasiteTempControl   
+    bool parasiteTempControlSettingsSanity(void);
+#endif
+#if EnableHumidityControlSupport
+    bool humidityControlSettingsSanity(void);
+#endif
+
+    bool mqttSettingSanity(void);
+
 };
 
 extern BPLSettings theSettings;
